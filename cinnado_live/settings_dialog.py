@@ -85,7 +85,7 @@ class SettingsDialog(Adw.Dialog):
         general.add(self.autostart)
         self.motion_notifications = Adw.SwitchRow(
             title='Alertes de mouvement sur ce PC',
-            subtitle=f'Reçues tant que {APP_NAME} reste ouvert, même réduit.',
+            subtitle=f'Ajoutées au journal tant que {APP_NAME} reste ouvert, même réduit.',
             active=preferences.motion_notifications,
         )
         general.add(self.motion_notifications)

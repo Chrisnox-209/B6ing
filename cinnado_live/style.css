@@ -15,6 +15,28 @@
 .live-button { border-radius: 10px; background: @b6_cyan; color: @b6_ink; }
 .live-button:hover { background: shade(@b6_cyan, 1.12); }
 
+.b6-sidebar {
+    padding: 14px 10px;
+    background: alpha(@window_fg_color, .035);
+    border-right: 1px solid alpha(@window_fg_color, .10);
+}
+.b6-nav-button { border-radius: 10px; padding: 0 10px; min-height: 38px; }
+.b6-nav-button:checked { background: alpha(@accent_bg_color, .22); }
+.alert-thumbnail {
+    margin: 6px 3px 6px 0;
+    border-radius: 7px;
+    background: #0f1721;
+    color: #9bb9d0;
+}
+.alert-play { background: alpha(@accent_bg_color, .22); }
+.alert-play:hover { background: alpha(@accent_bg_color, .35); }
+.alert-player {
+    padding: 10px;
+    border-radius: 12px;
+    background: @card_bg_color;
+    border: 1px solid alpha(@window_fg_color, .09);
+}
+
 .media-strip {
     padding: 4px;
     border-radius: 12px;

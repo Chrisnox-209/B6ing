@@ -10,6 +10,7 @@ from pathlib import Path
 import os
 from queue import Empty, Full, Queue
 import sys
+from tempfile import TemporaryDirectory
 import threading
 
 import gi
@@ -18,6 +19,8 @@ gi.require_version('Adw', '1')
 gi.require_version('Gst', '1.0')
 from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gst, Gtk, Pango
 
+from .alerts import AlertEntry, AlertJournal
+from .alerts_view import AlertsView
 from .camera_controls import CameraControls
 from .desktop import (
     APP_ICON_NAME, APP_ID, APP_LAUNCHER_ICON, APP_NAME, ICON_SEARCH_PATH, autostart_enabled, set_autostart,
@@ -25,15 +28,16 @@ from .desktop import (
 from .engine import Account, CameraError
 from .joystick import CameraKeyboard, Joystick, MotionInput
 from . import keyring
-from .media import AudioPlayer, MicrophoneCapture, Recording, TalkRequest, save_snapshot, snapshot
+from .media import AudioPlayer, MicrophoneCapture, Recording, TalkRequest, publish_media_file, save_snapshot, snapshot
 from .preferences import Preferences
 from .settings_dialog import SettingsDialog
 from .speak_button import SpeakButton
 from .tray import TrayIcon
 
-STATE = Path(os.environ.get('XDG_STATE_HOME', Path.home() / '.local/state')) / 'cinnado-live'
+STATE = Path(os.environ.get('XDG_STATE_HOME') or Path.home() / '.local/state') / 'cinnado-live'
 PREFERENCES_PATH = Path(os.environ.get('XDG_CONFIG_HOME') or Path.home() / '.config') / 'cinnado-live/settings.json'
 STATUS_REFRESH_SECONDS = 120
+MOTION_NOTIFICATION_ID = 'motion-alerts'
 
 
 def note(event: str) -> None:
@@ -894,6 +898,9 @@ class Window(Adw.ApplicationWindow):
         self.camera_status_timer = None
         self.motion_task = None
         self.motion_generation = None
+        self.alert_journal = None
+        self.alert_preview_tasks = set()
+        self.alert_downloads = {}
         self.selected_camera = None
         self.keyboard = CameraKeyboard(self, self.keyboard_joystick)
         self.closed = False
@@ -972,11 +979,34 @@ class Window(Adw.ApplicationWindow):
         login.append(self.info)
         self.stack.add_named(login, 'login')
 
+        account_view = Gtk.Box()
+        sidebar = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5, width_request=148,
+                          css_classes=['b6-sidebar'])
+        account_view.append(sidebar)
+        self.cameras_button = Gtk.ToggleButton(css_classes=['flat', 'b6-nav-button'])
+        self.cameras_button.set_child(Adw.ButtonContent(icon_name='camera-video-symbolic', label='Caméras',
+                                                        halign=Gtk.Align.START))
+        self.cameras_button.connect('clicked', self.show_cameras)
+        sidebar.append(self.cameras_button)
+        self.alerts_content = Adw.ButtonContent(icon_name='preferences-system-notifications-symbolic', label='Alertes',
+                                                halign=Gtk.Align.START)
+        self.alerts_button = Gtk.ToggleButton(child=self.alerts_content, css_classes=['flat', 'b6-nav-button'])
+        self.alerts_button.set_group(self.cameras_button)
+        self.alerts_button.connect('clicked', self.open_alerts)
+        sidebar.append(self.alerts_button)
+
+        self.account_pages = Gtk.Stack(hexpand=True, vexpand=True, hhomogeneous=False, vhomogeneous=False)
+        account_view.append(self.account_pages)
         self.grid = Gtk.Grid(column_spacing=14, row_spacing=14, column_homogeneous=True, row_homogeneous=True,
                              margin_start=18, margin_end=18, margin_top=18, margin_bottom=18)
         scroll = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
         scroll.set_child(self.grid)
-        self.stack.add_named(scroll, 'cameras')
+        self.account_pages.add_named(scroll, 'cameras')
+        self.alerts_view = AlertsView(self.remove_alert, self.clear_alerts, self.open_alert_clip,
+                                      self.download_alert_clip, self.request_alert_previews)
+        self.account_pages.add_named(self.alerts_view, 'alerts')
+        self.cameras_button.set_active(True)
+        self.stack.add_named(account_view, 'account')
         self.stack.set_visible_child_name('login')
         note('app_opened')
         lookup = self.worker.submit(asyncio.to_thread(keyring.load_account))
@@ -1006,22 +1036,182 @@ class Window(Adw.ApplicationWindow):
         for tile in self.tiles:
             tile.set_display_name(preferences.camera_names.get(tile.camera.identifier, tile.camera.name))
         self.update_motion_notifications()
+        self.refresh_alerts()
+
+    def open_alerts(self, *_):
+        if self.alert_journal is None:
+            return
+        self.keyboard.release()
+        for tile in self.tiles:
+            tile.release_joysticks()
+            tile.stop_talking()
+        self.account_pages.set_visible_child_name('alerts')
+        self.alerts_button.set_active(True)
+        self.alerts_view.set_active(True)
+        self.dismiss_alert_notification()
+
+    def show_cameras(self, *_):
+        self.alerts_view.set_active(False)
+        self.account_pages.set_visible_child_name('cameras')
+        self.cameras_button.set_active(True)
+
+    def open_alert_clip(self, entry, name):
+        if self.account_pages.get_visible_child_name() != 'alerts':
+            return
+        camera = next((tile.camera for tile in self.tiles if tile.camera.identifier == entry.camera_id), None)
+        if camera is None:
+            return
+        try:
+            self.alerts_view.clip.play(self.worker, camera, entry, name)
+        except OSError:
+            self.toast('Impossible de préparer le fichier temporaire du clip.')
+
+    def download_alert_clip(self, entry, name):
+        if entry.key in self.alert_downloads:
+            return
+        tile = next((item for item in self.tiles if item.camera.identifier == entry.camera_id), None)
+        if tile is None:
+            return
+        preferences = self.preferences
+        default_folder = self.default_recording_folder
+        camera, index = tile.camera, tile.index
+
+        async def save_clip():
+            folder = preferences.recording_folder or default_folder
+            if preferences.recording_folder is None:
+                folder.mkdir(parents=True, exist_ok=True)
+            with TemporaryDirectory(dir=folder, prefix='.b6ing-alert-') as directory:
+                path = Path(directory) / 'clip'
+                extension = await self.worker.account.download_alert_clip(camera, entry.identifier,
+                                                                          entry.occurred_at, path)
+                destination = preferences.alert_clip_path(default_folder, name, index,
+                                                         entry.occurred_at.astimezone(), extension)
+                return publish_media_file(path, destination)
+
+        task = self.worker.submit(save_clip())
+        self.alert_downloads[entry.key] = task
+        self.alerts_view.set_downloading(entry.key, True)
+        task.add_done_callback(lambda future: GLib.idle_add(self.alert_download_finished, entry.key, future))
+
+    def alert_download_finished(self, key, future):
+        if self.alert_downloads.get(key) is not future:
+            return GLib.SOURCE_REMOVE
+        del self.alert_downloads[key]
+        self.alerts_view.set_downloading(key, False)
+        try:
+            destination = future.result()
+        except CancelledError:
+            pass
+        except CameraError as exc:
+            self.toast(str(exc))
+        except OSError:
+            self.toast('Impossible d’enregistrer le clip dans le dossier des vidéos.')
+        except Exception:
+            self.toast('Le téléchargement du clip a échoué.')
+        else:
+            self.toast(f'Clip enregistré · {destination.name}')
+        return GLib.SOURCE_REMOVE
+
+    def request_alert_previews(self, entries):
+        cameras = {tile.camera.identifier: tile.camera for tile in self.tiles}
+        grouped = {}
+        for entry in entries:
+            if entry.camera_id in cameras:
+                grouped.setdefault(entry.camera_id, {})[entry.identifier] = entry.occurred_at
+
+        async def load():
+            account = self.worker.account
+            results = await asyncio.gather(*(account.read_alert_previews(cameras[camera_id], items)
+                                             for camera_id, items in grouped.items()), return_exceptions=True)
+            return {(camera_id, alert_id): image
+                    for camera_id, result in zip(grouped, results) if isinstance(result, dict)
+                    for alert_id, image in result.items()}
+
+        keys = tuple(entry.key for entry in entries)
+        task = self.worker.submit(load())
+        self.alert_preview_tasks.add(task)
+        task.add_done_callback(lambda future: GLib.idle_add(self.alert_previews_finished, keys, future))
+
+    def alert_previews_finished(self, keys, future):
+        if future in self.alert_preview_tasks:
+            self.alert_preview_tasks.remove(future)
+            try:
+                images = future.result()
+            except Exception:
+                images = {}
+            self.alerts_view.show_previews(keys, images)
+        return GLib.SOURCE_REMOVE
+
+    def refresh_alerts(self):
+        journal = self.alert_journal
+        count = journal.unread_count
+        label = f'Alertes ({count})' if count else 'Alertes'
+        self.alerts_content.set_label(label)
+        self.alerts_button.update_property([Gtk.AccessibleProperty.LABEL], [label])
+        names = {tile.camera.identifier: tile.name_label.get_text() for tile in self.tiles}
+        self.alerts_view.show_entries(journal.entries, names, self.preferences.motion_notifications)
+
+    def edit_alert_journal(self, edit):
+        try:
+            edit()
+        except (OSError, UnicodeError):
+            self.toast('Impossible de sauvegarder le journal d’alertes.')
+        self.refresh_alerts()
+
+    def dismiss_alert_notification(self):
+        self.get_application().withdraw_notification(MOTION_NOTIFICATION_ID)
+        if self.alert_journal is not None:
+            self.edit_alert_journal(self.alert_journal.mark_read)
+
+    def remove_alert(self, key):
+        if self.alert_journal is not None:
+            if self.alerts_view.clip.key == key:
+                self.alerts_view.clip.close()
+            self.edit_alert_journal(lambda: self.alert_journal.remove(key))
+            if self.alert_journal.unread_count == 0:
+                self.get_application().withdraw_notification(MOTION_NOTIFICATION_ID)
+
+    def clear_alerts(self):
+        if self.alert_journal is not None:
+            self.alerts_view.clip.close()
+            camera_ids = tuple(tile.camera.identifier for tile in self.tiles)
+            self.edit_alert_journal(lambda: self.alert_journal.clear(camera_ids))
+            if not self.alert_journal.entries:
+                self.get_application().withdraw_notification(MOTION_NOTIFICATION_ID)
+
+    def close_alert_journal(self):
+        for task in (*self.alert_preview_tasks, *self.alert_downloads.values()):
+            task.cancel()
+        self.alert_preview_tasks.clear()
+        self.alert_downloads.clear()
+        self.alerts_view.reset()
+        self.alert_journal = None
+        self.get_application().withdraw_notification(MOTION_NOTIFICATION_ID)
 
     def update_motion_notifications(self):
         if not self.preferences.motion_notifications:
             self.stop_motion_notifications()
+            self.get_application().withdraw_notification(MOTION_NOTIFICATION_ID)
             return
         if self.motion_task is not None or not self.tiles:
             return
         generation = self.motion_generation = object()
         cameras = tuple(tile.camera for tile in self.tiles)
+        imported_cameras = self.alert_journal.imported_cameras
 
         def notify(camera, alert):
             GLib.idle_add(self.show_motion_notification, generation, camera, alert)
 
+        def import_history(camera, alerts):
+            GLib.idle_add(self.import_motion_history, generation, camera, alerts)
+
         async def watch():
-            await asyncio.gather(*(self.worker.account.watch_motion(camera, notify) for camera in cameras),
-                                 return_exceptions=True)
+            await asyncio.gather(
+                *(self.worker.account.watch_motion(
+                    camera, notify, import_history=None if camera.identifier in imported_cameras else import_history,
+                ) for camera in cameras),
+                return_exceptions=True,
+            )
 
         self.motion_task = self.worker.submit(watch())
 
@@ -1031,17 +1221,39 @@ class Window(Adw.ApplicationWindow):
             self.motion_task.cancel()
             self.motion_task = None
 
+    def import_motion_history(self, generation, camera, alerts):
+        if self.motion_generation is generation and self.alert_journal is not None:
+            name = self.preferences.camera_names.get(camera.identifier, camera.name)
+            entries = (AlertEntry(camera.identifier, alert.identifier, name, alert.occurred_at) for alert in alerts)
+            self.edit_alert_journal(lambda: self.alert_journal.import_history(camera.identifier, entries))
+        return GLib.SOURCE_REMOVE
+
     def show_motion_notification(self, generation, camera, alert):
-        if self.motion_generation is generation:
-            tile = next((tile for tile in self.tiles if tile.camera is camera), None)
-            if tile is not None:
-                name = tile.name_label.get_text()
-                occurred = alert.occurred_at.astimezone()
-                notification = Gio.Notification.new('Mouvement détecté')
-                notification.set_body(f'{name} · {occurred:%H:%M}')
-                notification.set_icon(Gio.FileIcon.new(Gio.File.new_for_path(str(APP_LAUNCHER_ICON))))
-                notification.set_default_action('app.show-cameras')
-                self.get_application().send_notification(None, notification)
+        journal = self.alert_journal
+        if journal is None or self.motion_generation is not generation:
+            return GLib.SOURCE_REMOVE
+        tile = next((tile for tile in self.tiles if tile.camera is camera), None)
+        if tile is None:
+            return GLib.SOURCE_REMOVE
+
+        name = tile.name_label.get_text()
+        unread = self.account_pages.get_visible_child_name() != 'alerts' or not self.is_active()
+        entry = AlertEntry(camera.identifier, alert.identifier, name, alert.occurred_at, unread=unread)
+        try:
+            if not journal.add(entry):
+                return GLib.SOURCE_REMOVE
+        except (OSError, UnicodeError):
+            note('motion_journal_write_failed')
+            unread = True
+        self.refresh_alerts()
+        if unread:
+            occurred = entry.occurred_at.astimezone()
+            notification = Gio.Notification.new('Mouvement détecté')
+            notification.set_body(f'{name} · {occurred:%H:%M}')
+            notification.set_icon(Gio.FileIcon.new(Gio.File.new_for_path(str(APP_LAUNCHER_ICON))))
+            notification.set_default_action('app.show-alerts')
+            notification.add_button('Marquer comme lu', 'app.dismiss-alerts')
+            self.get_application().send_notification(MOTION_NOTIFICATION_ID, notification)
         return GLib.SOURCE_REMOVE
 
     def select_camera(self, tile):
@@ -1055,7 +1267,8 @@ class Window(Adw.ApplicationWindow):
             tile.add_css_class('keyboard-camera')
 
     def keyboard_joystick(self):
-        if self.stack.get_visible_child_name() != 'cameras':
+        if (self.stack.get_visible_child_name() != 'account'
+                or self.account_pages.get_visible_child_name() != 'cameras'):
             return None
         if self.selected_camera is not None:
             return self.selected_camera.joystick
@@ -1142,7 +1355,7 @@ class Window(Adw.ApplicationWindow):
                     saved = remember
                 except (GLib.Error, ImportError, RuntimeError):
                     warning = 'Le trousseau n’a pas pu mettre à jour le compte mémorisé.'
-            return cameras, saved, warning
+            return cameras, saved, warning, AlertJournal.for_account(STATE / 'alerts', email)
 
         self.login_task = self.worker.submit(authenticate())
         self.login_task.add_done_callback(lambda future: GLib.idle_add(self.signed_in, future))
@@ -1154,7 +1367,7 @@ class Window(Adw.ApplicationWindow):
         self.connect_button.set_sensitive(True)
         self.forget.set_sensitive(True)
         try:
-            cameras, self.saved_account, warning = future.result()
+            cameras, self.saved_account, warning, journal = future.result()
         except CameraError as exc:
             self.info.set_label(str(exc))
             note('login_failed')
@@ -1175,7 +1388,10 @@ class Window(Adw.ApplicationWindow):
             tile.load_camera_options()
         self.logout.set_visible(True)
         self.settings.set_visible(True)
-        self.stack.set_visible_child_name('cameras')
+        self.alert_journal = journal
+        self.show_cameras()
+        self.refresh_alerts()
+        self.stack.set_visible_child_name('account')
         self.update_motion_notifications()
         self.camera_status_timer = GLib.timeout_add_seconds(STATUS_REFRESH_SECONDS, self.refresh_camera_statuses)
         note(f'login_ok_b6_count={len(cameras)}')
@@ -1202,6 +1418,7 @@ class Window(Adw.ApplicationWindow):
 
     def sign_out(self, *_):
         self.clear_tiles()
+        self.close_alert_journal()
         self.worker.submit(self.worker.account.close())
         self.logout.set_visible(False)
         self.settings.set_visible(False)
@@ -1234,6 +1451,7 @@ class Window(Adw.ApplicationWindow):
             self.brand_style.disconnect(self.brand_style_handler)
             self.brand_style_handler = None
         self.clear_tiles()
+        self.close_alert_journal()
         return False
 
 
@@ -1250,6 +1468,12 @@ class Application(Adw.Application):
         show_cameras = Gio.SimpleAction.new('show-cameras', None)
         show_cameras.connect('activate', lambda *_: self.activate())
         self.add_action(show_cameras)
+        show_alerts = Gio.SimpleAction.new('show-alerts', None)
+        show_alerts.connect('activate', self.show_alerts)
+        self.add_action(show_alerts)
+        dismiss_alerts = Gio.SimpleAction.new('dismiss-alerts', None)
+        dismiss_alerts.connect('activate', self.dismiss_alerts)
+        self.add_action(dismiss_alerts)
 
     def do_startup(self):
         Adw.Application.do_startup(self)
@@ -1300,11 +1524,23 @@ class Application(Adw.Application):
         self.activate()
         return GLib.SOURCE_REMOVE
 
+    def show_alerts(self, *_):
+        self.activate()
+        self.main_window.present()
+        self.main_window.open_alerts()
+
+    def dismiss_alerts(self, *_):
+        if self.main_window is not None:
+            self.main_window.dismiss_alert_notification()
+        else:
+            self.withdraw_notification(MOTION_NOTIFICATION_ID)
+
     def hide_to_tray(self):
         window = self.main_window
         if window is not None:
             self.cancel_startup_fallback()
             window.keyboard.release()
+            window.alerts_view.clip.close()
             for tile in window.tiles:
                 tile.release_joysticks()
                 tile.stop_talking()

@@ -7,6 +7,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 import json
+from pathlib import Path
 import re
 import socket
 from urllib.parse import urlsplit
@@ -17,6 +18,9 @@ from .vendor_r2.cloud import Client
 from .vendor_r2.session import CameraAuthenticationError, RelayTimeout, run_session
 
 MOTION_POLL_SECONDS = 20
+MAX_ALERT_CLIP_BYTES = 32 * 1024 * 1024
+MAX_ALERT_PREVIEW_BYTES = 1024 * 1024
+ALERT_MEDIA_DOMAINS = ('ajcloud.net', 'myqcloud.com')
 
 
 class CameraError(RuntimeError):
@@ -107,6 +111,40 @@ class WifiReading:
 class MotionAlert:
     identifier: str
     occurred_at: datetime
+    clip_url: str | None = field(default=None, repr=False, compare=False)
+    preview_url: str | None = field(default=None, repr=False, compare=False)
+
+
+def _alert_media_url(url) -> str | None:
+    if not isinstance(url, str) or not 1 <= len(url) <= 8192:
+        return None
+    try:
+        parsed = urlsplit(url)
+        host = parsed.hostname or ''
+        recognized = any(host == domain or host.endswith('.' + domain) for domain in ALERT_MEDIA_DOMAINS)
+        if (recognized and parsed.scheme == 'https' and parsed.netloc in (host, f'{host}:443')
+                and parsed.path.startswith('/') and not parsed.fragment):
+            return url
+    except ValueError:
+        pass
+    return None
+
+
+def _alert_asset_urls(row: dict, field: str):
+    assets = row.get(field)
+    if not isinstance(assets, list):
+        return
+    for asset in assets:
+        if isinstance(asset, dict) and (url := _alert_media_url(asset.get('url'))):
+            yield str(asset.get('tags', '')).casefold(), url
+
+
+def _alert_video_format(data: bytes) -> str | None:
+    if data[4:8] == b'ftyp':
+        return 'mp4'
+    if len(data) >= 377 and data[0] == data[188] == data[376] == 0x47:
+        return 'ts'
+    return None
 
 
 def _motion_alerts(response, camera_id: str) -> list[MotionAlert]:
@@ -123,7 +161,10 @@ def _motion_alerts(response, camera_id: str) -> list[MotionAlert]:
             continue
         occurred_at = _reported_at(row.get('tsStart')) or _reported_at(row.get('cts'))
         if occurred_at is not None:
-            alerts.append(MotionAlert(identifier, occurred_at))
+            clip = next((url for tags, url in _alert_asset_urls(row, 'avs') if 'video' in tags), None)
+            images = list(_alert_asset_urls(row, 'images'))
+            preview = next((url for tags, url in images if 'thumb' in tags), images[0][1] if images else None)
+            alerts.append(MotionAlert(identifier, occurred_at, clip, preview))
     return sorted(alerts, key=lambda item: item.occurred_at)
 
 
@@ -263,33 +304,133 @@ class Account:
         except (aiohttp.ClientError, TimeoutError, AttributeError, ValueError, TypeError, RuntimeError) as exc:
             raise CameraError('Impossible de lire les commandes de cette caméra. Réessaie dans un instant.') from exc
 
-    async def watch_motion(self, camera: Camera, notify: Callable[[Camera, MotionAlert], None]) -> None:
+    async def _motion_access_key(self, client: Client, camera: Camera, gateway: str) -> str:
+        info = await self._camera_info(client, camera, gateway)
+        access_key = _record(info.get('base')).get('accessKey')
+        if not isinstance(access_key, str) or not 1 <= len(access_key.encode()) <= 256:
+            raise CameraError('AJCloud ne fournit pas l’accès aux alertes de cette caméra.')
+        return access_key
+
+    @staticmethod
+    async def _read_motion_alerts(
+        client: Client, camera: Camera, emc: str, access_key: str, *, before: datetime | None = None,
+    ) -> list[MotionAlert]:
+        device_type = str(camera.data.get('deviceType'))
+        route = f'/v1/{device_type}/alarms-list-ftr' if device_type in ('5', '6') else '/v1/alarms-list-ftr'
+        cursor = str(int(before.timestamp() * 1000)) if before is not None else '0'
+        response = await client.post(route, {'deviceId': camera.identifier, 'accessKey': access_key, 'cts': cursor},
+                                     signed=True, base=emc, device_id=camera.identifier)
+        return _motion_alerts(response, camera.identifier)
+
+    async def _find_motion_alerts(
+        self, camera: Camera, entries: dict[str, datetime],
+    ) -> tuple[Client, dict[str, MotionAlert]]:
         client = self._client_for(camera)
         config = camera.connection_config
         gateway = _endpoint(config.get('appGatewayUrl'))
         emc = _endpoint(config.get('appEmcUrl'))
-        device_type = str(camera.data.get('deviceType'))
-        route = f'/v1/{device_type}/alarms-list-ftr' if device_type in ('5', '6') else '/v1/alarms-list-ftr'
+        try:
+            access_key = await self._motion_access_key(client, camera, gateway)
+            alerts = await self._read_motion_alerts(client, camera, emc, access_key)
+            found = {item.identifier: item for item in alerts if item.identifier in entries}
+            for identifier, occurred_at in sorted(entries.items(), key=lambda item: item[1], reverse=True):
+                if identifier not in found:
+                    # The service paginates by creation time, which can follow the start of the event.
+                    before = occurred_at + timedelta(minutes=1)
+                    page = await self._read_motion_alerts(client, camera, emc, access_key, before=before)
+                    found.update((item.identifier, item) for item in page if item.identifier in entries)
+        except CameraError:
+            raise
+        except (aiohttp.ClientError, TimeoutError, ValueError, TypeError, RuntimeError) as exc:
+            raise CameraError('Impossible de retrouver l’alerte sur AJCloud. Réessaie dans un instant.') from exc
+        if self._client is not client:
+            raise CameraError('La session Wansview a été fermée.')
+        return client, found
+
+    async def read_alert_previews(self, camera: Camera, entries: dict[str, datetime]) -> dict[str, bytes]:
+        client, found = await self._find_motion_alerts(camera, entries)
+        limit = asyncio.Semaphore(4)
+        timeout = aiohttp.ClientTimeout(total=8)
+
+        async def read_image(alert):
+            async with limit:
+                try:
+                    async with client.session.get(alert.preview_url, timeout=timeout, allow_redirects=False) as response:
+                        if response.status != 200 or (response.content_length or 0) > MAX_ALERT_PREVIEW_BYTES:
+                            return b''
+                        try:
+                            await response.content.readexactly(MAX_ALERT_PREVIEW_BYTES + 1)
+                        except asyncio.IncompleteReadError as exc:
+                            if exc.partial.startswith((b'\xff\xd8\xff', b'\x89PNG\r\n\x1a\n')):
+                                return exc.partial
+                except (aiohttp.ClientError, TimeoutError):
+                    pass
+                return b''
+
+        alerts = [alert for alert in found.values() if alert.preview_url]
+        images = await asyncio.gather(*(read_image(alert) for alert in alerts))
+        return {alert.identifier: image for alert, image in zip(alerts, images) if image}
+
+    async def download_alert_clip(
+        self, camera: Camera, identifier: str, occurred_at: datetime, destination: Path,
+    ) -> str:
+        client, found = await self._find_motion_alerts(camera, {identifier: occurred_at})
+        alert = found.get(identifier)
+        if alert is None or alert.clip_url is None:
+            raise CameraError('Ce clip d’alerte n’est plus proposé par AJCloud ou n’a pas de vidéo associée.')
+
+        timeout = aiohttp.ClientTimeout(total=30, connect=8, sock_read=12)
+        try:
+            async with client.session.get(alert.clip_url, timeout=timeout, allow_redirects=False) as response:
+                if response.status != 200:
+                    raise CameraError('Le clip d’alerte est indisponible sur AJCloud.')
+                if response.content_length is not None and response.content_length > MAX_ALERT_CLIP_BYTES:
+                    raise CameraError('Le clip d’alerte est trop volumineux pour cette relecture.')
+                header = await response.content.readexactly(512)
+                extension = _alert_video_format(header)
+                if extension is None:
+                    raise CameraError('AJCloud a envoyé un format vidéo incompatible.')
+                with destination.open('xb') as output:
+                    try:
+                        output.write(header)
+                        size = len(header)
+                        async for chunk in response.content.iter_chunked(65536):
+                            size += len(chunk)
+                            if size > MAX_ALERT_CLIP_BYTES:
+                                raise CameraError('Le clip d’alerte est trop volumineux pour cette relecture.')
+                            output.write(chunk)
+                    except BaseException:
+                        destination.unlink(missing_ok=True)
+                        raise
+                return extension
+        except (aiohttp.ClientError, TimeoutError, asyncio.IncompleteReadError) as exc:
+            raise CameraError('Impossible de télécharger le clip d’alerte. Réessaie dans un instant.') from exc
+
+    async def watch_motion(
+        self, camera: Camera, notify: Callable[[Camera, MotionAlert], None],
+        *, import_history: Callable[[Camera, list[MotionAlert]], None] | None = None,
+    ) -> None:
+        client = self._client_for(camera)
+        config = camera.connection_config
+        gateway = _endpoint(config.get('appGatewayUrl'))
+        emc = _endpoint(config.get('appEmcUrl'))
         started = datetime.now(timezone.utc)
         access_key = None
         seen = {}
         while self._client is client:
             try:
                 if access_key is None:
-                    info = await self._camera_info(client, camera, gateway)
-                    access_key = _record(info.get('base')).get('accessKey')
-                    if not isinstance(access_key, str) or not 1 <= len(access_key.encode()) <= 256:
-                        raise CameraError('AJCloud ne fournit pas l’accès aux alertes de cette caméra.')
-                response = await client.post(route, {
-                    'deviceId': camera.identifier, 'accessKey': access_key, 'cts': '0',
-                }, signed=True, base=emc, device_id=camera.identifier)
-                alerts = _motion_alerts(response, camera.identifier)
+                    access_key = await self._motion_access_key(client, camera, gateway)
+                alerts = await self._read_motion_alerts(client, camera, emc, access_key)
             except (aiohttp.ClientError, TimeoutError, AttributeError, ValueError, TypeError, RuntimeError):
                 access_key = None
                 await asyncio.sleep(2 * MOTION_POLL_SECONDS)
                 continue
 
             now = datetime.now(timezone.utc)
+            if import_history is not None:
+                import_history(camera, [alert for alert in alerts if alert.occurred_at < started])
+                import_history = None
             cutoff = max(started, now - timedelta(minutes=5))
             seen = {identifier: occurred for identifier, occurred in seen.items() if occurred >= cutoff}
             for alert in alerts:

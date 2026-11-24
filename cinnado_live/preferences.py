@@ -75,3 +75,7 @@ class Preferences:
 
     def photo_path(self, default_folder: Path, name: str, index: int, captured: datetime) -> Path:
         return _media_path(self.photo_folder, default_folder, name, index, captured, 'png')
+
+    def alert_clip_path(self, default_folder: Path, name: str, index: int, occurred: datetime, extension: str) -> Path:
+        path = _media_path(self.recording_folder, default_folder, name, index, occurred, extension)
+        return path.with_stem(f'{path.stem}_alerte')

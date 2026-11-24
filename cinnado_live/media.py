@@ -36,7 +36,7 @@ def snapshot(picture):
     return picture.get_native().get_renderer().render_texture(node, None) if node is not None else None
 
 
-def _publish_file(temporary: Path, base: Path) -> Path:
+def publish_media_file(temporary: Path, base: Path) -> Path:
     for index in count(1):
         destination = base if index == 1 else base.with_stem(f'{base.stem}_{index}')
         try:
@@ -59,7 +59,7 @@ def save_snapshot(texture, destination: Path) -> bool:
     try:
         if not texture.save_to_png(str(temporary)):
             return False
-        _publish_file(temporary, destination)
+        publish_media_file(temporary, destination)
         return True
     finally:
         temporary.unlink(missing_ok=True)
@@ -211,7 +211,7 @@ class Recording:
             self.pipeline.set_state(Gst.State.NULL)
         try:
             if complete and self.temporary.stat().st_size:
-                self.destination = _publish_file(self.temporary, self.destination)
+                self.destination = publish_media_file(self.temporary, self.destination)
                 return True
             return False
         finally:
