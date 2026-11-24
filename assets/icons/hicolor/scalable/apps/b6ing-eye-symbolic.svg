@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 96 96">
+  <path fill="#000" fill-rule="evenodd" d="
+    M8 8h38c23.2 0 42 18.8 42 42v38H50C26.8 88 8 69.2 8 46z
+    m4 4v34c0 21 17 38 38 38h34V50c0-21-17-38-38-38z"/>
+  <path fill="#000" fill-rule="evenodd" d="
+    M18 18h28c17.7 0 32 14.3 32 32v28H50c-17.7 0-32-14.3-32-32z
+    M48 31a17 17 0 1 0 0 34 17 17 0 0 0 0-34z"/>
+  <circle fill="#000" cx="51" cy="39" r="5.4"/>
+  <circle fill="#000" cx="46.5" cy="50" r="2.7"/>
+</svg>

@@ -1,0 +1,1339 @@
+"""GTK viewer for authenticated Cinnado B6 live streams."""
+
+from __future__ import annotations
+
+import asyncio
+from concurrent.futures import CancelledError
+from dataclasses import replace
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+import os
+from queue import Empty, Full, Queue
+import sys
+import threading
+
+import gi
+gi.require_version('Gtk', '4.0')
+gi.require_version('Adw', '1')
+gi.require_version('Gst', '1.0')
+from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gst, Gtk, Pango
+
+from .camera_controls import CameraControls
+from .desktop import (
+    APP_ICON_NAME, APP_ID, APP_LAUNCHER_ICON, APP_NAME, ICON_SEARCH_PATH, autostart_enabled, set_autostart,
+)
+from .engine import Account, CameraError
+from .joystick import CameraKeyboard, Joystick, MotionInput
+from . import keyring
+from .media import AudioPlayer, MicrophoneCapture, Recording, TalkRequest, save_snapshot, snapshot
+from .preferences import Preferences
+from .settings_dialog import SettingsDialog
+from .speak_button import SpeakButton
+from .tray import TrayIcon
+
+STATE = Path(os.environ.get('XDG_STATE_HOME', Path.home() / '.local/state')) / 'cinnado-live'
+PREFERENCES_PATH = Path(os.environ.get('XDG_CONFIG_HOME') or Path.home() / '.config') / 'cinnado-live/settings.json'
+STATUS_REFRESH_SECONDS = 120
+
+
+def note(event: str) -> None:
+    """Only record fixed test milestones. Never record account data or frames."""
+    try:
+        STATE.mkdir(parents=True, exist_ok=True, mode=0o700)
+        fd = os.open(STATE / 'status.log', os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(fd, 'a', encoding='utf-8') as output:
+            output.write(event + '\n')
+    except OSError:
+        pass
+
+
+class Worker:
+    def __init__(self):
+        self.loop = asyncio.new_event_loop()
+        self.thread = threading.Thread(target=self.loop.run_forever, daemon=True)
+        self.thread.start()
+        self.account = Account()
+
+    def submit(self, coroutine):
+        return asyncio.run_coroutine_threadsafe(coroutine, self.loop)
+
+    def close(self):
+        async def shutdown():
+            pending = [task for task in asyncio.all_tasks() if task is not asyncio.current_task()]
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+            await self.account.close()
+        try:
+            self.submit(shutdown()).result(2)
+        finally:
+            self.loop.call_soon_threadsafe(self.loop.stop)
+            self.thread.join(2)
+            if not self.thread.is_alive():
+                self.loop.close()
+
+
+class Preview:
+    """Decode Annex B access units to a GTK paintable."""
+
+    def __init__(self, picture, codec, fps, first_frame, on_error, on_resolution=None):
+        kind, parser, decoder = {
+            'h264': ('h264', 'h264parse', 'avdec_h264'),
+            'hevc': ('h265', 'h265parse', 'avdec_h265'),
+        }[codec]
+        fps = max(1, min(60, int(fps)))
+        self.fps = fps
+        self.pipeline = Gst.parse_launch(
+            f'appsrc name=media is-live=true format=time do-timestamp=true max-buffers=20 leaky-type=downstream '
+            f'caps="video/x-{kind},stream-format=byte-stream,alignment=au,framerate={fps}/1" '
+            f'! {parser} ! {decoder} max-threads=2 ! videoconvert ! gtk4paintablesink name=view sync=false'
+        )
+        self.source = self.pipeline.get_by_name('media')
+        self.picture = picture
+        self.codec = codec
+        self.on_error = on_error
+        sink = self.pipeline.get_by_name('view')
+        picture.set_paintable(sink.get_property('paintable'))
+
+        def decoded(_pad, _info):
+            GLib.idle_add(first_frame)
+            return Gst.PadProbeReturn.REMOVE
+
+        pad = sink.get_static_pad('sink')
+        pad.add_probe(Gst.PadProbeType.BUFFER, decoded)
+        if on_resolution is not None:
+            def dimensions(_pad, info):
+                event = info.get_event()
+                if event.type == Gst.EventType.CAPS:
+                    caps = event.parse_caps().get_structure(0)
+                    GLib.idle_add(on_resolution, caps.get_value('width'), caps.get_value('height'))
+                return Gst.PadProbeReturn.OK
+            pad.add_probe(Gst.PadProbeType.EVENT_DOWNSTREAM, dimensions)
+        self.bus = self.pipeline.get_bus()
+        self.bus.add_signal_watch()
+        self.handler = self.bus.connect('message::error', lambda *_: self.on_error())
+        if self.pipeline.set_state(Gst.State.PLAYING) == Gst.StateChangeReturn.FAILURE:
+            self.close()
+            raise CameraError('Le lecteur vidéo ne peut pas démarrer sur ce PC.')
+
+    def push(self, data):
+        return self.source.emit('push-buffer', Gst.Buffer.new_wrapped(data))
+
+    def close(self):
+        self.bus.disconnect(self.handler)
+        self.bus.remove_signal_watch()
+        self.pipeline.set_state(Gst.State.NULL)
+        self.picture.set_paintable(None)
+
+
+class ReadingBadge(Gtk.Box):
+    def __init__(self):
+        super().__init__(spacing=5)
+        self.add_css_class('reading-badge')
+        self.icon = Gtk.Image()
+        self.label = Gtk.Label(css_classes=['numeric'])
+        self.append(self.icon)
+        self.append(self.label)
+
+    def show_reading(self, icon, text, description, reported_at=None, *, warning=False):
+        self.icon.set_from_icon_name(icon)
+        if reported_at is not None:
+            if datetime.now(timezone.utc) - reported_at >= timedelta(days=1):
+                text += ' · ancien'
+            description += f'\nDernier relevé le {reported_at.astimezone():%d/%m/%Y à %H:%M}'
+        self.label.set_text(text)
+        if warning:
+            self.add_css_class('weak-reading')
+        else:
+            self.remove_css_class('weak-reading')
+        self.set_tooltip_text(description)
+        self.update_property([Gtk.AccessibleProperty.LABEL], [description])
+
+
+class CameraIndicators(Gtk.Box):
+    def __init__(self, margin):
+        super().__init__(spacing=6, halign=Gtk.Align.START, valign=Gtk.Align.START,
+                         margin_start=margin, margin_top=margin)
+        self.battery = ReadingBadge()
+        self.wifi = ReadingBadge()
+        self.append(self.battery)
+        self.append(self.wifi)
+        self.update(None, None)
+
+    def update(self, battery, wifi):
+        if battery is None:
+            self.battery.show_reading('battery-missing-symbolic', '—', 'Batterie · aucun relevé reçu')
+        else:
+            level = ((battery.percent + 5) // 10) * 10
+            value = f'{battery.percent} %'
+            self.battery.show_reading(f'battery-level-{level}-symbolic', value, f'Batterie · {value}',
+                                      battery.reported_at, warning=battery.percent <= 20)
+
+        if wifi is None:
+            self.wifi.show_reading('network-wireless-signal-none-symbolic', '—', 'Wi-Fi · aucun relevé reçu')
+            return
+
+        if wifi.percent is None:
+            value = f'{wifi.dbm} dBm'
+            bars = sum(wifi.dbm >= threshold for threshold in (-95, -75, -65, -55))
+        else:
+            value = f'{wifi.percent} %'
+            bars = sum(wifi.percent >= threshold for threshold in (1, 40, 60, 80))
+        description = f'Wi-Fi · {value}'
+        if wifi.percent is not None and wifi.dbm is not None:
+            description += f'\nPuissance mesurée · {wifi.dbm} dBm'
+            if wifi.dbm_at is not None and (wifi.percent_at is None or
+                                          abs((wifi.dbm_at - wifi.percent_at).total_seconds()) >= 60):
+                description += f' le {wifi.dbm_at.astimezone():%d/%m/%Y à %H:%M}'
+        level = ('none', 'weak', 'ok', 'good', 'excellent')[bars]
+        self.wifi.show_reading(f'network-wireless-signal-{level}-symbolic', value, description,
+                               wifi.reported_at, warning=bars <= 1)
+
+
+def latest_reading(previous, incoming):
+    if incoming is None:
+        return previous
+    if previous is None or previous.reported_at is None:
+        return incoming
+    if incoming.reported_at is None or incoming.reported_at < previous.reported_at:
+        return previous
+    return incoming
+
+
+class CameraTile(Gtk.Box):
+    def __init__(self, camera, worker, index):
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=9, hexpand=True, vexpand=True)
+        self.camera, self.worker = camera, worker
+        self.index = index
+        self.preview = None
+        self.preview_epoch = None
+        self.task = None
+        self.frames = None
+        self.motion = None
+        self.motorized = False
+        self.recording = None
+        self.fullscreen_window = None
+        self.fullscreen_joystick = None
+        self.fullscreen_toasts = None
+        self.fullscreen_controls = None
+        self.fullscreen_record_button = None
+        self.fullscreen_indicators = None
+        self.battery_reading = None
+        self.wifi_reading = None
+        self.camera_status_task = None
+        self.camera_options = None
+        self.controls_task = None
+        self.quality_code = None
+        self.audio_enabled = False
+        self.audio_frames = None
+        self.audio_player = None
+        self.talk_request = None
+        self.talk_owner = None
+        self.microphone = None
+        self.timer = None
+        self.generation = None
+        self.add_css_class('view-card')
+        selection = Gtk.GestureClick(button=Gdk.BUTTON_PRIMARY)
+        selection.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        selection.connect('pressed', self.select_for_keyboard)
+        self.add_controller(selection)
+
+        header = Gtk.Box(spacing=14)
+        self.name_label = Gtk.Label(xalign=0, hexpand=True, ellipsize=Pango.EllipsizeMode.END)
+        self.name_label.add_css_class('heading')
+        self.set_display_name(camera.name)
+        header.append(self.name_label)
+        self.button = Gtk.Button(label='Voir le direct')
+        self.button.add_css_class('suggested-action')
+        self.button.add_css_class('live-button')
+        self.button.connect('clicked', self.toggle)
+        header.append(self.button)
+        self.append(header)
+        self.status = Gtk.Label(label='Prête · diffusion à la demande', xalign=0, wrap=True)
+        self.status.add_css_class('dim-label')
+        self.append(self.status)
+
+        frame = Gtk.Overlay(hexpand=True, vexpand=True)
+        frame.add_css_class('video-area')
+        self.picture = Gtk.Picture(can_shrink=True, content_fit=Gtk.ContentFit.CONTAIN)
+        frame.set_child(self.picture)
+        self.empty = Gtk.Image.new_from_icon_name('camera-video-symbolic')
+        self.empty.set_pixel_size(40)
+        self.empty.set_halign(Gtk.Align.CENTER)
+        self.empty.set_valign(Gtk.Align.CENTER)
+        frame.add_overlay(self.empty)
+        self.indicators = CameraIndicators(margin=8)
+        frame.add_overlay(self.indicators)
+        self.joystick = self.overlay_joystick(size=96, margin=8)
+        self.joystick.add_css_class('compact')
+        self.joystick.set_visible(False)
+        self.joystick.set_sensitive(False)
+        frame.add_overlay(self.joystick)
+        frame.set_size_request(300, 165)
+        self.append(frame)
+
+        self.camera_actions = Gtk.Box(spacing=5, sensitive=False, css_classes=['media-strip'])
+        self.camera_actions.set_hexpand(True)
+        self.append(self.camera_actions)
+        self.audio_button = self.sound_button()
+        self.audio_button.connect('toggled', self.change_audio)
+        self.camera_actions.append(self.audio_button)
+        self.talk_button = SpeakButton(self.start_talking, self.stop_talking)
+        self.camera_actions.append(self.talk_button)
+        fullscreen = Gtk.Button(icon_name='view-fullscreen-symbolic', tooltip_text='Plein écran',
+                                css_classes=['control-icon'])
+        fullscreen.update_property([Gtk.AccessibleProperty.LABEL], ['Plein écran'])
+        fullscreen.connect('clicked', self.fullscreen_player)
+        self.camera_actions.append(fullscreen)
+        self.add_capture_buttons(self.camera_actions)
+        self.quality_choice = self.quality_selector()
+        self.quality_choice.connect('notify::selected', self.change_quality)
+        self.camera_actions.append(self.quality_choice)
+        self.resolution = Gtk.Label()
+        self.resolution.add_css_class('dim-label')
+        self.resolution.add_css_class('numeric')
+        self.camera_actions.append(self.resolution)
+        self.controls = CameraControls(self.change_camera_option)
+        self.append(self.controls)
+
+    def set_display_name(self, name):
+        self.name_label.set_text(name)
+        self.name_label.set_tooltip_text(name)
+        if self.fullscreen_window is not None:
+            self.fullscreen_window.set_title(name)
+
+    def add_capture_buttons(self, actions, *, fullscreen=False):
+        label = 'Enregistrer une image PNG'
+        photo = Gtk.Button(icon_name='camera-photo-symbolic', tooltip_text=label, css_classes=['control-icon'])
+        photo.update_property([Gtk.AccessibleProperty.LABEL], [label])
+        photo.connect('clicked', self.take_photo)
+        actions.append(photo)
+
+        record = Gtk.Button(css_classes=['control-icon', 'record-control'])
+        record.connect('clicked', self.toggle_recording)
+        actions.append(record)
+        if fullscreen:
+            self.fullscreen_record_button = record
+        else:
+            self.record_button = record
+        self.update_record_buttons()
+
+    def update_record_buttons(self):
+        active = self.recording is not None
+        icon = 'media-playback-stop-symbolic' if active else 'media-record-symbolic'
+        label = 'Arrêter l’enregistrement' if active else 'Enregistrer la vidéo sur le PC'
+        for button in (self.record_button, self.fullscreen_record_button):
+            if button is None:
+                continue
+            button.set_icon_name(icon)
+            button.set_tooltip_text(label)
+            button.update_property([Gtk.AccessibleProperty.LABEL], [label])
+            if active:
+                button.add_css_class('destructive-action')
+            else:
+                button.remove_css_class('destructive-action')
+
+    def update_camera_indicators(self, options):
+        if options is not None:
+            self.battery_reading = latest_reading(self.battery_reading, options.battery)
+            self.wifi_reading = latest_reading(self.wifi_reading, options.wifi)
+        self.indicators.update(self.battery_reading, self.wifi_reading)
+        if self.fullscreen_indicators is not None:
+            self.fullscreen_indicators.update(self.battery_reading, self.wifi_reading)
+
+    def refresh_camera_status(self):
+        if self.camera_status_task is not None or self.controls_task is not None:
+            return
+        self.camera_status_task = self.worker.submit(self.worker.account.read_camera_options(self.camera))
+        self.camera_status_task.add_done_callback(lambda future: GLib.idle_add(self.finish_camera_status, future))
+
+    def finish_camera_status(self, future):
+        if future is not self.camera_status_task:
+            return False
+        self.camera_status_task = None
+        try:
+            options = future.result()
+        except (CameraError, CancelledError):
+            options = None
+        self.update_camera_indicators(options)
+        return False
+
+    def overlay_joystick(self, *, size, margin):
+        joystick = Joystick(self.set_direction, size=size)
+        joystick.set_halign(Gtk.Align.END)
+        joystick.set_valign(Gtk.Align.END)
+        joystick.set_margin_end(margin)
+        joystick.set_margin_bottom(margin)
+        joystick.add_css_class('video-control')
+        joystick.set_tooltip_text('Maintiens une direction pour orienter la caméra')
+        return joystick
+
+    def select_for_keyboard(self, _gesture, _count, x, y):
+        if self.joystick.is_sensitive() and isinstance(root := self.get_root(), Window):
+            root.select_camera(self)
+            clicked = self.pick(x, y, Gtk.PickFlags.DEFAULT)
+            while clicked is not None and clicked is not self:
+                if isinstance(clicked, (Gtk.Button, Gtk.DropDown, Gtk.Editable, Gtk.Range)):
+                    return
+                clicked = clicked.get_parent()
+            self.joystick.grab_focus()
+
+    @staticmethod
+    def sound_button():
+        sound = Gtk.ToggleButton(icon_name='audio-volume-muted-symbolic', tooltip_text='Écouter le son de la caméra',
+                                 css_classes=['control-icon'])
+        sound.update_property([Gtk.AccessibleProperty.LABEL], ['Son du direct'])
+        return sound
+
+    def change_audio(self, button):
+        self.audio_enabled = button.get_active()
+        button.set_icon_name('audio-volume-high-symbolic' if self.audio_enabled else 'audio-volume-muted-symbolic')
+        button.set_tooltip_text('Couper le son du direct' if self.audio_enabled else 'Écouter le son de la caméra')
+        if not self.audio_enabled:
+            self.close_audio()
+
+    def close_audio(self):
+        if self.audio_player is not None:
+            self.audio_player.close()
+            self.audio_player = None
+        if self.audio_frames is not None:
+            while True:
+                try:
+                    self.audio_frames.get_nowait()
+                except Empty:
+                    break
+
+    def audio_failure(self):
+        self.audio_button.set_active(False)
+        self.notify('Le son de la caméra ne peut pas être lu sur ce PC.')
+
+    def start_talking(self, button):
+        if not self.camera_actions.is_sensitive() or self.talk_request is not None:
+            return
+        if isinstance(root := self.get_root(), Window):
+            for tile in root.tiles:
+                if tile is not self:
+                    tile.stop_talking()
+        request = TalkRequest(lambda format: GLib.idle_add(self.talk_ready, request, format))
+        self.talk_owner = button
+        self.talk_request = request
+        self.close_audio()
+        button.add_css_class('suggested-action')
+        button.set_tooltip_text('Connexion au haut-parleur…')
+
+    def talk_ready(self, request, format):
+        if self.talk_request is not request:
+            return False
+        if format is None:
+            self.stop_talking()
+            self.notify('La caméra n’a pas ouvert le canal de parole.')
+            return False
+        try:
+            self.microphone = MicrophoneCapture(format, request.offer, lambda: self.microphone_failed(request))
+        except (GLib.Error, RuntimeError):
+            self.microphone_failed(request)
+            return False
+        self.talk_owner.remove_css_class('suggested-action')
+        self.talk_owner.add_css_class('destructive-action')
+        self.talk_owner.set_tooltip_text('Micro actif · relâche pour couper')
+        note(f'talk_started camera={self.index}')
+        return False
+
+    def microphone_failed(self, request):
+        if self.talk_request is request:
+            self.stop_talking()
+            self.notify('Ubuntu n’a pas pu ouvrir le microphone.')
+
+    def stop_talking(self, button=None):
+        owner = self.talk_owner
+        if owner is None or (button is not None and owner is not button):
+            return
+        self.talk_request = self.talk_owner = None
+        if self.microphone is not None:
+            self.microphone.close()
+            self.microphone = None
+        owner.held = False
+        owner.remove_css_class('suggested-action')
+        owner.remove_css_class('destructive-action')
+        owner.set_tooltip_text('Maintiens pour parler')
+        note(f'talk_stopped camera={self.index}')
+
+    def drain_audio(self):
+        if not self.audio_enabled or self.audio_frames is None or self.talk_request is not None:
+            return
+        for _ in range(6):
+            try:
+                data, epoch = self.audio_frames.get_nowait()
+            except Empty:
+                break
+            if self.preview_epoch != epoch:
+                continue
+            if self.audio_player is None:
+                def heard():
+                    if self.audio_enabled and self.preview_epoch == epoch:
+                        note(f'live_audio_decoded camera={self.index}')
+                    return False
+
+                try:
+                    self.audio_player = AudioPlayer(heard, self.audio_failure)
+                except (GLib.Error, RuntimeError):
+                    self.audio_failure()
+                    return
+            if not self.audio_player.push(data):
+                self.audio_failure()
+                return
+
+    def notify(self, message):
+        if self.fullscreen_toasts is not None:
+            self.fullscreen_toasts.add_toast(Adw.Toast.new(message))
+        elif root := self.get_root():
+            root.toast(message)
+
+    def refresh_controls(self):
+        for controls in (self.controls, self.fullscreen_controls):
+            if controls is not None:
+                controls.refresh(self.camera_options, self.controls_task is not None)
+
+    def load_camera_options(self):
+        self.run_camera_control(self.worker.account.read_camera_options(self.camera))
+
+    def change_camera_option(self, option, value):
+        if self.controls_task is not None:
+            return
+
+        async def request(options):
+            account = self.worker.account
+            if options is None:
+                options = await account.read_camera_options(self.camera)
+            capability = 'night_vision' if option == 'vision' else option
+            if not getattr(options, capability, False):
+                raise CameraError('Cette caméra ne propose pas cette commande.')
+            await account.set_camera_option(self.camera, option, value)
+            return replace(options, vision_mode=value) if option == 'vision' else options
+
+        message = 'Mode de vision enregistré.' if option == 'vision' else 'Commande acceptée par AJCloud.'
+        self.run_camera_control(request(self.camera_options), message=message)
+
+    def run_camera_control(self, request, *, message=None):
+        self.controls_task = self.worker.submit(request)
+        self.refresh_controls()
+        self.controls_task.add_done_callback(
+            lambda future: GLib.idle_add(self.finish_camera_controls, future, message))
+
+    def finish_camera_controls(self, future, message):
+        self.controls_task = None
+        had_options = self.camera_options is not None
+        try:
+            self.camera_options = future.result()
+        except CancelledError:
+            pass
+        except CameraError as exc:
+            if message is not None:
+                self.notify(str(exc))
+        except Exception:
+            if message is not None:
+                self.notify('La caméra n’a pas confirmé la commande.')
+        else:
+            if not had_options or message is None:
+                self.update_camera_indicators(self.camera_options)
+            if message is not None:
+                self.notify(message)
+        self.refresh_controls()
+        return False
+
+    @staticmethod
+    def quality_selector():
+        choice = Gtk.DropDown.new_from_strings(['Haute', 'Éco'])
+        choice.add_css_class('quality-control')
+        choice.set_tooltip_text('Qualité du direct')
+        choice.update_property([Gtk.AccessibleProperty.LABEL], ['Qualité du direct'])
+        return choice
+
+    def change_quality(self, choice, _spec):
+        selected = choice.get_selected()
+        if selected in (0, 1):
+            self.stop_recording()
+            self.quality_code = (5, 1)[selected]
+
+    def show_resolution(self, generation, epoch, width, height):
+        if self.generation is generation and self.preview_epoch == epoch and width and height:
+            text = f'{width} × {height}'
+            if self.resolution.get_text() != text:
+                self.resolution.set_text(text)
+                note(f'live_resolution camera={self.index} {width}x{height}')
+        return False
+
+    def toggle(self, *_):
+        if self.task is not None:
+            self.reset('Direct arrêté.')
+            return
+        generation = self.generation = object()
+        queue = self.frames = Queue(maxsize=48)
+        audio_frames = self.audio_frames = Queue(maxsize=16)
+        motion = self.motion = MotionInput()
+        self.button.set_label('Arrêter')
+        self.status.set_label('Ouverture du direct…')
+        note(f'stream_requested camera={self.index}')
+
+        async def receive(data, codec, fps, epoch):
+            try:
+                queue.put_nowait((data, codec, fps, epoch))
+            except Full:
+                pass
+
+        async def receive_audio(data, epoch):
+            if self.talk_request is not None:
+                return
+            try:
+                audio_frames.put_nowait((data, epoch))
+            except Full:
+                pass
+
+        def stage(message):
+            GLib.idle_add(self.set_status, generation, message)
+
+        def show_controls(available):
+            def apply():
+                if self.generation is generation:
+                    self.motorized = available
+                return False
+            GLib.idle_add(apply)
+
+        async def request():
+            await self.worker.account.play(self.camera, asyncio.Event(), receive, stage,
+                                           direction=motion.read, ptz_available=show_controls,
+                                           quality=lambda: self.quality_code,
+                                           listening=lambda: self.audio_enabled, audio=receive_audio,
+                                           requested_talk=lambda: self.talk_request)
+
+        self.task = self.worker.submit(request())
+        self.task.add_done_callback(lambda future: GLib.idle_add(self.finish, generation, future))
+        self.timer = GLib.timeout_add(25, self.drain, generation)
+
+    def set_status(self, generation, message):
+        if self.generation is generation:
+            self.status.set_label(message)
+            self.release_joysticks()
+            self.stop_talking()
+            self.close_audio()
+            self.joystick.set_sensitive(False)
+            self.camera_actions.set_sensitive(False)
+            self.resolution.set_text('')
+            if self.recording is not None:
+                self.stop_recording()
+        return False
+
+    def set_direction(self, direction):
+        if self.motion is not None:
+            self.motion.refresh(self.preview_epoch, direction if self.joystick.get_sensitive() else None)
+
+    def release_joysticks(self):
+        self.joystick.release()
+        if self.fullscreen_joystick is not None:
+            self.fullscreen_joystick.release()
+
+    def fullscreen_player(self, *_):
+        if self.fullscreen_window is not None:
+            self.fullscreen_window.present()
+            return
+        root = self.get_root()
+        window = Gtk.Window(application=root.get_application(), transient_for=root, title=self.name_label.get_text())
+        self.fullscreen_window = window
+        self.joystick.release()
+        self.stop_talking()
+        layout = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        box = Gtk.Overlay(hexpand=True, vexpand=True)
+        box.add_css_class('video-area')
+        layout.append(box)
+        picture = Gtk.Picture(can_shrink=True, content_fit=Gtk.ContentFit.CONTAIN)
+        bindings = [self.picture.bind_property('paintable', picture, 'paintable', GObject.BindingFlags.SYNC_CREATE)]
+        box.set_child(picture)
+        self.fullscreen_indicators = CameraIndicators(margin=16)
+        self.fullscreen_indicators.update(self.battery_reading, self.wifi_reading)
+        box.add_overlay(self.fullscreen_indicators)
+
+        joystick = self.fullscreen_joystick = self.overlay_joystick(size=144, margin=24)
+        keyboard = CameraKeyboard(window, lambda: joystick)
+        for property_name in ('visible', 'sensitive'):
+            bindings.append(self.joystick.bind_property(property_name, joystick, property_name,
+                                                        GObject.BindingFlags.SYNC_CREATE))
+        box.add_overlay(joystick)
+
+        toolbar = Gtk.Box(spacing=12)
+        toolbar.add_css_class('fullscreen-toolbar')
+        layout.append(toolbar)
+        options = Gtk.Box(spacing=5, css_classes=['media-strip'])
+        sound = self.sound_button()
+        options.append(sound)
+        speak = SpeakButton(self.start_talking, self.stop_talking)
+        options.append(speak)
+        self.add_capture_buttons(options, fullscreen=True)
+        window.connect('notify::is-active',
+                       lambda fullscreen, _prop: speak.release() if not fullscreen.is_active() else None)
+        dimensions = Gtk.Label()
+        dimensions.add_css_class('numeric')
+        dimensions.add_css_class('dim-label')
+        quality = self.quality_selector()
+        options.append(quality)
+        options.append(dimensions)
+        toolbar.append(options)
+        toolbar.append(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL))
+        self.fullscreen_controls = CameraControls(self.change_camera_option)
+        toolbar.append(self.fullscreen_controls)
+        self.refresh_controls()
+        bindings.extend((
+            self.audio_button.bind_property('active', sound, 'active',
+                                            GObject.BindingFlags.SYNC_CREATE | GObject.BindingFlags.BIDIRECTIONAL),
+            self.audio_button.bind_property('icon-name', sound, 'icon-name', GObject.BindingFlags.SYNC_CREATE),
+            self.audio_button.bind_property('tooltip-text', sound, 'tooltip-text', GObject.BindingFlags.SYNC_CREATE),
+            self.resolution.bind_property('label', dimensions, 'label', GObject.BindingFlags.SYNC_CREATE),
+            self.quality_choice.bind_property('selected', quality, 'selected',
+                                              GObject.BindingFlags.SYNC_CREATE | GObject.BindingFlags.BIDIRECTIONAL),
+            self.camera_actions.bind_property('sensitive', options, 'sensitive', GObject.BindingFlags.SYNC_CREATE),
+        ))
+        toolbar.append(Gtk.Box(hexpand=True))
+        close = Gtk.Button(icon_name='view-restore-symbolic', tooltip_text='Quitter le plein écran',
+                           css_classes=['control-icon'])
+        close.update_property([Gtk.AccessibleProperty.LABEL], ['Quitter le plein écran'])
+        close.connect('clicked', lambda *_: window.close())
+        toolbar.append(close)
+        key = Gtk.EventControllerKey()
+
+        def escape(_controller, keyval, *_):
+            if keyval == Gdk.KEY_Escape:
+                window.close()
+                return True
+            return False
+
+        def closed(*_):
+            keyboard.release()
+            joystick.release()
+            self.stop_talking(speak)
+            for binding in bindings:
+                binding.unbind()
+            self.fullscreen_joystick = None
+            self.fullscreen_toasts = None
+            self.fullscreen_controls = None
+            self.fullscreen_record_button = None
+            self.fullscreen_indicators = None
+            self.fullscreen_window = None
+            return False
+
+        key.connect('key-pressed', escape)
+        window.add_controller(key)
+        self.fullscreen_toasts = Adw.ToastOverlay(child=layout)
+        window.set_child(self.fullscreen_toasts)
+        window.connect('close-request', closed)
+        window.fullscreen()
+        window.present()
+        if joystick.get_visible() and joystick.get_sensitive():
+            joystick.grab_focus()
+
+    def take_photo(self, *_):
+        root = self.get_root()
+        if not isinstance(root, Window):
+            return
+        captured = datetime.now()
+        try:
+            texture = snapshot(self.picture)
+        except (GLib.Error, TypeError):
+            texture = None
+        if texture is None:
+            self.notify('Aucune image disponible pour la capture.')
+            return
+
+        try:
+            path = root.preferences.photo_path(root.default_photo_folder, self.name_label.get_text(),
+                                               self.index, captured)
+            saved = save_snapshot(texture, path)
+        except OSError:
+            self.notify('Dossier des photos inaccessible. Vérifie le dossier dans les réglages.')
+            return
+        self.notify('Photo enregistrée.' if saved else 'Impossible d’enregistrer la photo.')
+
+    def toggle_recording(self, *_):
+        if self.recording is not None:
+            self.stop_recording()
+            return
+        root = self.get_root()
+        if not isinstance(root, Window) or self.preview is None:
+            return
+        try:
+            path = root.preferences.recording_path(root.default_recording_folder, self.name_label.get_text(),
+                                                   self.index, datetime.now())
+            self.recording = Recording(path, self.preview.codec, self.preview.fps)
+        except OSError:
+            self.notify('Dossier d’enregistrement inaccessible. Vérifie le dossier dans les réglages.')
+            return
+        except (GLib.Error, RuntimeError):
+            self.notify('Impossible de démarrer l’enregistrement.')
+            return
+        self.update_record_buttons()
+        self.notify('Enregistrement du direct sur le PC.')
+
+    def stop_recording(self):
+        recording, self.recording = self.recording, None
+        if recording is None:
+            return
+        try:
+            saved = recording.finish()
+        except OSError:
+            saved = False
+        self.update_record_buttons()
+        self.notify('Vidéo enregistrée.' if saved else 'Aucune vidéo enregistrée.')
+
+    def drain(self, generation):
+        if self.generation is not generation or not self.frames:
+            return False
+        for _ in range(12):
+            try:
+                data, codec, fps, epoch = self.frames.get_nowait()
+            except Empty:
+                break
+            if self.preview and (self.preview_epoch != epoch or self.preview.codec != codec):
+                self.stop_recording()
+                self.preview.close()
+                self.preview = None
+            if self.preview is None:
+                try:
+                    self.preview_epoch = epoch
+                    self.preview = Preview(self.picture, codec, fps,
+                                           lambda epoch=epoch: self.decoded(generation, epoch),
+                                           lambda epoch=epoch: self.decoder_error(generation, epoch),
+                                           lambda width, height, epoch=epoch:
+                                           self.show_resolution(generation, epoch, width, height))
+                except (CameraError, GLib.Error, KeyError):
+                    self.timer = None
+                    self.reset('Le flux a été reçu, mais le lecteur vidéo ne peut pas le décoder.')
+                    note(f'decoder_error camera={self.index}')
+                    return False
+            self.preview.push(data)
+            if self.recording is not None and not self.recording.push(data):
+                self.stop_recording()
+        self.drain_audio()
+        return True
+
+    def decoded(self, generation, epoch):
+        if self.generation is generation and self.preview_epoch == epoch:
+            self.status.set_label('En direct')
+            self.empty.set_visible(False)
+            self.joystick.set_visible(self.motorized)
+            self.joystick.set_sensitive(self.motorized)
+            if self.motorized and isinstance(root := self.get_root(), Window) and root.selected_camera is None:
+                root.select_camera(self)
+            self.camera_actions.set_sensitive(True)
+            note(f'live_frame_decoded camera={self.index}')
+        return False
+
+    def decoder_error(self, generation, epoch):
+        if self.generation is generation and self.preview_epoch == epoch:
+            self.reset('Le flux a été reçu, mais le lecteur vidéo ne peut pas le décoder.')
+            note(f'decoder_error camera={self.index}')
+
+    def finish(self, generation, future):
+        if self.generation is not generation:
+            return False
+        try:
+            future.result()
+        except CancelledError:
+            self.reset('Direct arrêté.')
+        except CameraError as exc:
+            self.reset(str(exc))
+            note(f'stream_connection_failed camera={self.index} · {exc}')
+        except Exception:
+            self.reset('Erreur inattendue lors de la lecture.')
+            note(f'unexpected_stream_error camera={self.index}')
+        else:
+            self.reset('Session terminée. Relance le direct pour continuer.')
+            note(f'stream_finished camera={self.index}')
+        return False
+
+    def reset(self, message):
+        self.generation = None
+        self.release_joysticks()
+        self.stop_talking()
+        if isinstance(root := self.get_root(), Window) and root.selected_camera is self:
+            root.select_camera(None)
+        self.audio_button.set_active(False)
+        self.close_audio()
+        self.audio_frames = None
+        self.stop_recording()
+        if self.fullscreen_window is not None:
+            self.fullscreen_window.close()
+        if self.task:
+            self.task.cancel()
+            self.task = None
+        if self.timer is not None:
+            GLib.source_remove(self.timer)
+            self.timer = None
+        if self.preview:
+            self.preview.close()
+            self.preview = None
+        self.preview_epoch = None
+        self.frames = None
+        self.motion = None
+        self.motorized = False
+        self.joystick.set_visible(False)
+        self.joystick.set_sensitive(False)
+        self.camera_actions.set_sensitive(False)
+        self.resolution.set_text('')
+        self.empty.set_visible(True)
+        self.button.set_label('Voir le direct')
+        self.status.set_label(message)
+
+
+class Window(Adw.ApplicationWindow):
+    def __init__(self, application, worker):
+        super().__init__(application=application, title=APP_NAME, default_width=1080, default_height=740)
+        self.initial_monitor_handler = None
+        self.initial_monitor_known = False
+        self.size_for_monitor(self.get_display().get_monitors().get_item(0))
+        self.connect('realize', self.watch_initial_monitor)
+        self.worker = worker
+        self.tiles = []
+        self.camera_status_timer = None
+        self.motion_task = None
+        self.motion_generation = None
+        self.selected_camera = None
+        self.keyboard = CameraKeyboard(self, self.keyboard_joystick)
+        self.closed = False
+        self.login_task = None
+        self.saved_account = False
+        self.preferences = Preferences.load(PREFERENCES_PATH)
+        videos = GLib.get_user_special_dir(GLib.UserDirectory.DIRECTORY_VIDEOS)
+        self.default_recording_folder = (Path(videos) if videos else Path.home() / 'Videos') / 'Cinnado Live'
+        pictures = GLib.get_user_special_dir(GLib.UserDirectory.DIRECTORY_PICTURES)
+        self.default_photo_folder = (Path(pictures) if pictures else Path.home() / 'Pictures') / 'Cinnado Live'
+        self.connect('close-request', self.on_close)
+        self.connect('notify::is-active', self.release_window_microphone)
+
+        toolbar = Adw.ToolbarView()
+        header = Adw.HeaderBar()
+        brand = Gtk.Box(spacing=8, valign=Gtk.Align.CENTER)
+        logo = Gtk.Image.new_from_icon_name(APP_ICON_NAME)
+        logo.add_css_class('brand-icon')
+        logo.set_pixel_size(28)
+        self.brand_style = Adw.StyleManager.get_for_display(self.get_display())
+
+        def update_logo(style, *_):
+            if style.get_dark():
+                logo.add_css_class('theme-dark')
+            else:
+                logo.remove_css_class('theme-dark')
+
+        self.brand_style_handler = self.brand_style.connect('notify::dark', update_logo)
+        update_logo(self.brand_style)
+        brand.append(logo)
+        brand.append(Adw.WindowTitle(title=APP_NAME, subtitle='Be Seeing'))
+        header.set_title_widget(brand)
+        toolbar.add_top_bar(header)
+        self.logout = Gtk.Button(label='Déconnexion', visible=False)
+        self.logout.connect('clicked', self.sign_out)
+        header.pack_end(self.logout)
+        self.settings = Gtk.Button(icon_name='emblem-system-symbolic', tooltip_text='Réglages', visible=False)
+        self.settings.update_property([Gtk.AccessibleProperty.LABEL], ['Réglages'])
+        self.settings.connect('clicked', self.open_settings)
+        header.pack_end(self.settings)
+        self.stack = Gtk.Stack()
+        toolbar.set_content(self.stack)
+        self.toasts = Adw.ToastOverlay(child=toolbar)
+        self.set_content(self.toasts)
+
+        login = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14,
+                        halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER)
+        login.set_size_request(410, -1)
+        login.add_css_class('view-card')
+        title = Gtk.Label(label='Voir mes caméras', xalign=0)
+        title.add_css_class('title-1')
+        login.append(title)
+        info = Gtk.Label(label='Connecte-toi avec le compte Wansview Cloud de tes caméras.', xalign=0, wrap=True)
+        login.append(info)
+        form = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
+        form.add_css_class('boxed-list')
+        self.email = Adw.EntryRow(title='Adresse e-mail')
+        self.email.set_input_purpose(Gtk.InputPurpose.EMAIL)
+        self.password = Adw.PasswordEntryRow(title='Mot de passe')
+        self.email.connect('entry-activated', lambda *_: self.password.grab_focus())
+        self.password.connect('entry-activated', self.sign_in)
+        form.append(self.email)
+        form.append(self.password)
+        login.append(form)
+        self.remember = Gtk.CheckButton(label='Mémoriser le compte sur ce PC')
+        login.append(self.remember)
+        self.connect_button = Gtk.Button(label='Se connecter')
+        self.connect_button.add_css_class('suggested-action')
+        self.connect_button.connect('clicked', self.sign_in)
+        login.append(self.connect_button)
+        self.forget = Gtk.Button(label='Oublier le compte mémorisé', visible=False)
+        self.forget.connect('clicked', self.forget_saved_account)
+        login.append(self.forget)
+        self.info = Gtk.Label(label='La mémorisation utilise le trousseau Ubuntu.', xalign=0, wrap=True)
+        self.info.add_css_class('dim-label')
+        login.append(self.info)
+        self.stack.add_named(login, 'login')
+
+        self.grid = Gtk.Grid(column_spacing=14, row_spacing=14, column_homogeneous=True, row_homogeneous=True,
+                             margin_start=18, margin_end=18, margin_top=18, margin_bottom=18)
+        scroll = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
+        scroll.set_child(self.grid)
+        self.stack.add_named(scroll, 'cameras')
+        self.stack.set_visible_child_name('login')
+        note('app_opened')
+        lookup = self.worker.submit(asyncio.to_thread(keyring.load_account))
+        lookup.add_done_callback(lambda future: GLib.idle_add(self.restore_account, future))
+
+    def toast(self, message):
+        self.toasts.add_toast(Adw.Toast.new(message))
+
+    def open_settings(self, *_):
+        cameras = [tile.camera for tile in self.tiles]
+        dialog = SettingsDialog(self.preferences, self.default_recording_folder, self.default_photo_folder,
+                                cameras, self.save_preferences)
+        dialog.present(self)
+
+    def save_preferences(self, preferences, *, autostart=None):
+        previous = autostart_enabled()
+        startup_changed = autostart is not None and autostart != previous
+        if startup_changed:
+            set_autostart(autostart)
+        try:
+            preferences.save(PREFERENCES_PATH)
+        except (OSError, UnicodeError):
+            if startup_changed:
+                set_autostart(previous)
+            raise
+        self.preferences = preferences
+        for tile in self.tiles:
+            tile.set_display_name(preferences.camera_names.get(tile.camera.identifier, tile.camera.name))
+        self.update_motion_notifications()
+
+    def update_motion_notifications(self):
+        if not self.preferences.motion_notifications:
+            self.stop_motion_notifications()
+            return
+        if self.motion_task is not None or not self.tiles:
+            return
+        generation = self.motion_generation = object()
+        cameras = tuple(tile.camera for tile in self.tiles)
+
+        def notify(camera, alert):
+            GLib.idle_add(self.show_motion_notification, generation, camera, alert)
+
+        async def watch():
+            await asyncio.gather(*(self.worker.account.watch_motion(camera, notify) for camera in cameras),
+                                 return_exceptions=True)
+
+        self.motion_task = self.worker.submit(watch())
+
+    def stop_motion_notifications(self):
+        self.motion_generation = None
+        if self.motion_task is not None:
+            self.motion_task.cancel()
+            self.motion_task = None
+
+    def show_motion_notification(self, generation, camera, alert):
+        if self.motion_generation is generation:
+            tile = next((tile for tile in self.tiles if tile.camera is camera), None)
+            if tile is not None:
+                name = tile.name_label.get_text()
+                occurred = alert.occurred_at.astimezone()
+                notification = Gio.Notification.new('Mouvement détecté')
+                notification.set_body(f'{name} · {occurred:%H:%M}')
+                notification.set_icon(Gio.FileIcon.new(Gio.File.new_for_path(str(APP_LAUNCHER_ICON))))
+                notification.set_default_action('app.show-cameras')
+                self.get_application().send_notification(None, notification)
+        return GLib.SOURCE_REMOVE
+
+    def select_camera(self, tile):
+        if tile is self.selected_camera:
+            return
+        self.keyboard.release()
+        if self.selected_camera is not None:
+            self.selected_camera.remove_css_class('keyboard-camera')
+        self.selected_camera = tile
+        if tile is not None:
+            tile.add_css_class('keyboard-camera')
+
+    def keyboard_joystick(self):
+        if self.stack.get_visible_child_name() != 'cameras':
+            return None
+        if self.selected_camera is not None:
+            return self.selected_camera.joystick
+        for tile in self.tiles:
+            if tile.joystick.is_sensitive() and tile.joystick.get_visible():
+                self.select_camera(tile)
+                return tile.joystick
+        return None
+
+    def release_window_microphone(self, *_):
+        if not self.is_active():
+            for tile in self.tiles:
+                tile.stop_talking(tile.talk_button)
+
+    def restore_account(self, future):
+        if self.closed or self.login_task is not None:
+            return False
+        try:
+            account = future.result()
+        except (GLib.Error, ValueError, ImportError):
+            self.info.set_label('Le trousseau est indisponible. Tu peux te connecter manuellement.')
+            return False
+        if account is not None:
+            self.saved_account = True
+            self.forget.set_visible(True)
+            if not self.email.get_text() and not self.password.get_text():
+                email, password = account
+                self.email.set_text(email)
+                self.remember.set_active(True)
+                self.start_login(email, password, automatic=True)
+        return False
+
+    def forget_saved_account(self, *_):
+        self.connect_button.set_sensitive(False)
+        self.forget.set_sensitive(False)
+        task = self.worker.submit(asyncio.to_thread(keyring.forget_account))
+        task.add_done_callback(lambda future: GLib.idle_add(self.forgot_account, future))
+
+    def forgot_account(self, future):
+        if self.closed:
+            return False
+        self.connect_button.set_sensitive(True)
+        self.forget.set_sensitive(True)
+        try:
+            future.result()
+        except (GLib.Error, ImportError):
+            self.info.set_label('Le trousseau n’a pas pu effacer le compte.')
+        else:
+            self.saved_account = False
+            self.remember.set_active(False)
+            self.forget.set_visible(False)
+            self.email.set_text('')
+            self.password.set_text('')
+            self.info.set_label('Le compte a été oublié sur ce PC.')
+        return False
+
+    def sign_in(self, *_):
+        if self.login_task is not None or not self.connect_button.get_sensitive():
+            return
+        email, password = self.email.get_text().strip(), self.password.get_text()
+        if not email or not password:
+            self.info.set_label('Saisis ton adresse et ton mot de passe Wansview Cloud.')
+            return
+        self.start_login(email, password)
+
+    def start_login(self, email, password, *, automatic=False):
+        remember = self.remember.get_active()
+        previously_saved = self.saved_account
+        self.password.set_text('')
+        self.connect_button.set_sensitive(False)
+        self.forget.set_sensitive(False)
+        self.info.set_label('Connexion à AJCloud…')
+
+        async def authenticate():
+            cameras = await self.worker.account.login(email, password)
+            saved = previously_saved
+            warning = None
+            if not automatic and (remember or previously_saved):
+                try:
+                    if remember:
+                        await asyncio.to_thread(keyring.save_account, email, password)
+                    else:
+                        await asyncio.to_thread(keyring.forget_account)
+                    saved = remember
+                except (GLib.Error, ImportError, RuntimeError):
+                    warning = 'Le trousseau n’a pas pu mettre à jour le compte mémorisé.'
+            return cameras, saved, warning
+
+        self.login_task = self.worker.submit(authenticate())
+        self.login_task.add_done_callback(lambda future: GLib.idle_add(self.signed_in, future))
+
+    def signed_in(self, future):
+        self.login_task = None
+        if self.closed:
+            return False
+        self.connect_button.set_sensitive(True)
+        self.forget.set_sensitive(True)
+        try:
+            cameras, self.saved_account, warning = future.result()
+        except CameraError as exc:
+            self.info.set_label(str(exc))
+            note('login_failed')
+            return False
+        except Exception:
+            self.info.set_label('La connexion a échoué. Réessaie dans un instant.')
+            note('unexpected_login_error')
+            return False
+        self.forget.set_visible(self.saved_account)
+        if warning:
+            self.toast(warning)
+        self.clear_tiles()
+        for index, camera in enumerate(cameras):
+            tile = CameraTile(camera, self.worker, index + 1)
+            tile.set_display_name(self.preferences.camera_names.get(camera.identifier, camera.name))
+            self.tiles.append(tile)
+            self.grid.attach(tile, index % 2, index // 2, 1, 1)
+            tile.load_camera_options()
+        self.logout.set_visible(True)
+        self.settings.set_visible(True)
+        self.stack.set_visible_child_name('cameras')
+        self.update_motion_notifications()
+        self.camera_status_timer = GLib.timeout_add_seconds(STATUS_REFRESH_SECONDS, self.refresh_camera_statuses)
+        note(f'login_ok_b6_count={len(cameras)}')
+        return False
+
+    def refresh_camera_statuses(self):
+        for tile in self.tiles:
+            tile.refresh_camera_status()
+        return GLib.SOURCE_CONTINUE
+
+    def clear_tiles(self):
+        self.stop_motion_notifications()
+        if self.camera_status_timer is not None:
+            GLib.source_remove(self.camera_status_timer)
+            self.camera_status_timer = None
+        self.select_camera(None)
+        for tile in self.tiles:
+            if tile.camera_status_task is not None:
+                tile.camera_status_task.cancel()
+                tile.camera_status_task = None
+            tile.reset('Direct arrêté.')
+            self.grid.remove(tile)
+        self.tiles.clear()
+
+    def sign_out(self, *_):
+        self.clear_tiles()
+        self.worker.submit(self.worker.account.close())
+        self.logout.set_visible(False)
+        self.settings.set_visible(False)
+        self.stack.set_visible_child_name('login')
+        self.info.set_label('Session fermée.')
+
+    def size_for_monitor(self, monitor):
+        if monitor is not None:
+            screen = monitor.get_geometry()
+            self.set_default_size(round(screen.width * .75), round(screen.height * .75))
+
+    def watch_initial_monitor(self, *_):
+        if not self.initial_monitor_known:
+            surface = self.get_surface()
+            self.initial_monitor_handler = surface.connect('enter-monitor', self.initial_monitor_entered)
+
+    def initial_monitor_entered(self, surface, monitor):
+        surface.disconnect(self.initial_monitor_handler)
+        self.initial_monitor_handler = None
+        self.initial_monitor_known = True
+        self.size_for_monitor(monitor)
+
+    def on_close(self, *_):
+        application = self.get_application()
+        if not application.quitting:
+            application.hide_to_tray()
+            return True
+        self.closed = True
+        if self.brand_style_handler is not None:
+            self.brand_style.disconnect(self.brand_style_handler)
+            self.brand_style_handler = None
+        self.clear_tiles()
+        return False
+
+
+class Application(Adw.Application):
+    def __init__(self):
+        super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.HANDLES_COMMAND_LINE)
+        self.add_main_option('minimized', 0, GLib.OptionFlags.NONE, GLib.OptionArg.NONE,
+                             'Démarrer dans la zone de notification', None)
+        self.worker = None
+        self.main_window = None
+        self.tray = None
+        self.startup_fallback = None
+        self.quitting = False
+        show_cameras = Gio.SimpleAction.new('show-cameras', None)
+        show_cameras.connect('activate', lambda *_: self.activate())
+        self.add_action(show_cameras)
+
+    def do_startup(self):
+        Adw.Application.do_startup(self)
+        css = Gtk.CssProvider()
+        css.load_from_path(str(Path(__file__).with_name('style.css')))
+        display = Gdk.Display.get_default()
+        Gtk.IconTheme.get_for_display(display).add_search_path(str(ICON_SEARCH_PATH))
+        Gtk.Window.set_default_icon_name(APP_ICON_NAME)
+        Gtk.StyleContext.add_provider_for_display(display, css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        connection = self.get_dbus_connection()
+        if connection is not None:
+            self.tray = TrayIcon(connection, self.show_from_tray, self.hide_to_tray, self.quit_from_tray,
+                                 Adw.StyleManager.get_for_display(display))
+
+    def ensure_window(self):
+        if self.main_window is None:
+            self.worker = Worker()
+            self.main_window = Window(self, self.worker)
+        return self.main_window
+
+    def do_command_line(self, command_line):
+        if command_line.get_options_dict().contains('minimized'):
+            if self.main_window is None:
+                self.ensure_window()
+                self.startup_fallback = GLib.timeout_add_seconds(7, self.finish_minimized_startup)
+        else:
+            self.activate()
+        return 0
+
+    def finish_minimized_startup(self):
+        self.startup_fallback = None
+        if self.tray is None or not self.tray.available:
+            self.main_window.minimize()
+            self.main_window.present()
+        return GLib.SOURCE_REMOVE
+
+    def cancel_startup_fallback(self):
+        if self.startup_fallback is not None:
+            GLib.source_remove(self.startup_fallback)
+            self.startup_fallback = None
+
+    def do_activate(self):
+        self.cancel_startup_fallback()
+        window = self.ensure_window()
+        (self.get_active_window() or window).present()
+
+    def show_from_tray(self):
+        self.activate()
+        return GLib.SOURCE_REMOVE
+
+    def hide_to_tray(self):
+        window = self.main_window
+        if window is not None:
+            self.cancel_startup_fallback()
+            window.keyboard.release()
+            for tile in window.tiles:
+                tile.release_joysticks()
+                tile.stop_talking()
+                if tile.fullscreen_window is not None:
+                    tile.fullscreen_window.close()
+            if self.tray is not None and self.tray.available:
+                window.set_visible(False)
+            else:
+                window.minimize()
+        return GLib.SOURCE_REMOVE
+
+    def quit_from_tray(self):
+        self.quitting = True
+        if self.main_window is not None:
+            self.main_window.close()
+        else:
+            self.quit()
+        return GLib.SOURCE_REMOVE
+
+    def do_shutdown(self):
+        self.cancel_startup_fallback()
+        if self.tray is not None:
+            self.tray.close()
+        if self.worker:
+            self.worker.close()
+        Adw.Application.do_shutdown(self)
+
+
+if __name__ == '__main__':
+    GLib.set_application_name(APP_NAME)
+    Gst.init(None)
+    sys.exit(Application().run(sys.argv))
