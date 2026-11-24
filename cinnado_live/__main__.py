@@ -6,6 +6,7 @@ import asyncio
 from concurrent.futures import CancelledError
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+from itertools import islice
 from pathlib import Path
 import os
 from queue import Empty, Full, Queue
@@ -38,6 +39,7 @@ STATE = Path(os.environ.get('XDG_STATE_HOME') or Path.home() / '.local/state') /
 PREFERENCES_PATH = Path(os.environ.get('XDG_CONFIG_HOME') or Path.home() / '.config') / 'cinnado-live/settings.json'
 STATUS_REFRESH_SECONDS = 120
 MOTION_NOTIFICATION_ID = 'motion-alerts'
+ALERT_PRELOAD_ATTEMPTS = 5
 
 
 def note(event: str) -> None:
@@ -261,10 +263,8 @@ class CameraTile(Gtk.Box):
         frame.add_css_class('video-area')
         self.picture = Gtk.Picture(can_shrink=True, content_fit=Gtk.ContentFit.CONTAIN)
         frame.set_child(self.picture)
-        self.empty = Gtk.Image.new_from_icon_name('camera-video-symbolic')
-        self.empty.set_pixel_size(40)
-        self.empty.set_halign(Gtk.Align.CENTER)
-        self.empty.set_valign(Gtk.Align.CENTER)
+        self.empty = Gtk.Image(icon_name=APP_ICON_NAME, pixel_size=50, halign=Gtk.Align.CENTER,
+                               valign=Gtk.Align.CENTER, css_classes=['camera-placeholder'])
         frame.add_overlay(self.empty)
         self.indicators = CameraIndicators(margin=8)
         frame.add_overlay(self.indicators)
@@ -901,6 +901,7 @@ class Window(Adw.ApplicationWindow):
         self.alert_journal = None
         self.alert_preview_tasks = set()
         self.alert_downloads = {}
+        self.alert_preload_pending = False
         self.selected_camera = None
         self.keyboard = CameraKeyboard(self, self.keyboard_joystick)
         self.closed = False
@@ -1041,6 +1042,8 @@ class Window(Adw.ApplicationWindow):
     def open_alerts(self, *_):
         if self.alert_journal is None:
             return
+        if self.account_pages.get_visible_child_name() != 'alerts' or not self.alerts_view.clip.get_visible():
+            self.alert_preload_pending = True
         self.keyboard.release()
         for tile in self.tiles:
             tile.release_joysticks()
@@ -1051,20 +1054,32 @@ class Window(Adw.ApplicationWindow):
         self.dismiss_alert_notification()
 
     def show_cameras(self, *_):
+        self.alert_preload_pending = False
         self.alerts_view.set_active(False)
         self.account_pages.set_visible_child_name('cameras')
         self.cameras_button.set_active(True)
 
-    def open_alert_clip(self, entry, name):
+    def open_alert_clip(self, entry, name, *, autoplay=True, on_unavailable=None):
+        self.alert_preload_pending = False
         if self.account_pages.get_visible_child_name() != 'alerts':
-            return
+            return False
         camera = next((tile.camera for tile in self.tiles if tile.camera.identifier == entry.camera_id), None)
         if camera is None:
-            return
+            return False
         try:
-            self.alerts_view.clip.play(self.worker, camera, entry, name)
+            self.alerts_view.clip.play(self.worker, camera, entry, name, autoplay=autoplay,
+                                       on_unavailable=on_unavailable)
         except OSError:
             self.toast('Impossible de préparer le fichier temporaire du clip.')
+            return False
+        return True
+
+    def preload_alert_clip(self, candidates):
+        for entry, name in candidates:
+            if self.open_alert_clip(entry, name, autoplay=False,
+                                    on_unavailable=lambda: self.preload_alert_clip(candidates)):
+                return True
+        return False
 
     def download_alert_clip(self, entry, name):
         if entry.key in self.alert_downloads:
@@ -1150,6 +1165,9 @@ class Window(Adw.ApplicationWindow):
         self.alerts_button.update_property([Gtk.AccessibleProperty.LABEL], [label])
         names = {tile.camera.identifier: tile.name_label.get_text() for tile in self.tiles}
         self.alerts_view.show_entries(journal.entries, names, self.preferences.motion_notifications)
+        if self.alert_preload_pending:
+            candidates = ((entry, names[entry.camera_id]) for entry in journal.entries if entry.camera_id in names)
+            self.preload_alert_clip(islice(candidates, ALERT_PRELOAD_ATTEMPTS))
 
     def edit_alert_journal(self, edit):
         try:
@@ -1173,6 +1191,7 @@ class Window(Adw.ApplicationWindow):
 
     def clear_alerts(self):
         if self.alert_journal is not None:
+            self.alert_preload_pending = False
             self.alerts_view.clip.close()
             camera_ids = tuple(tile.camera.identifier for tile in self.tiles)
             self.edit_alert_journal(lambda: self.alert_journal.clear(camera_ids))
@@ -1180,6 +1199,7 @@ class Window(Adw.ApplicationWindow):
                 self.get_application().withdraw_notification(MOTION_NOTIFICATION_ID)
 
     def close_alert_journal(self):
+        self.alert_preload_pending = False
         for task in (*self.alert_preview_tasks, *self.alert_downloads.values()):
             task.cancel()
         self.alert_preview_tasks.clear()

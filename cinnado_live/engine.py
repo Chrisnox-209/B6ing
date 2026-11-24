@@ -27,6 +27,10 @@ class CameraError(RuntimeError):
     """A message which is safe to display in the app."""
 
 
+class AlertClipUnavailable(CameraError):
+    """The event no longer offers a playable clip."""
+
+
 @dataclass(frozen=True)
 class Camera:
     name: str
@@ -377,11 +381,13 @@ class Account:
         client, found = await self._find_motion_alerts(camera, {identifier: occurred_at})
         alert = found.get(identifier)
         if alert is None or alert.clip_url is None:
-            raise CameraError('Ce clip d’alerte n’est plus proposé par AJCloud ou n’a pas de vidéo associée.')
+            raise AlertClipUnavailable('Ce clip d’alerte n’est plus proposé par AJCloud ou n’a pas de vidéo associée.')
 
         timeout = aiohttp.ClientTimeout(total=30, connect=8, sock_read=12)
         try:
             async with client.session.get(alert.clip_url, timeout=timeout, allow_redirects=False) as response:
+                if response.status in (403, 404, 410):
+                    raise AlertClipUnavailable('Ce clip d’alerte n’est plus accessible sur AJCloud.')
                 if response.status != 200:
                     raise CameraError('Le clip d’alerte est indisponible sur AJCloud.')
                 if response.content_length is not None and response.content_length > MAX_ALERT_CLIP_BYTES:

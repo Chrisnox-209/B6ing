@@ -53,7 +53,7 @@ Ouvre **B6ing** depuis le menu Applications ou lance `.venv/bin/python -m cinnad
 2. Clique sur **Voir le direct**. Pour piloter une caméra au clavier, sélectionne sa vignette puis maintiens **↑**, **↓**, **←** ou **→**. En plein écran, les flèches pilotent la caméra affichée.
 3. Ouvre **Réglages** pour renommer les caméras, choisir les dossiers des photos et vidéos, recevoir les alertes de mouvement ou activer le démarrage réduit. Utilise le menu de l’icône de notification pour réafficher la fenêtre ou quitter B6ing.
 
-Le menu à gauche alterne entre **Caméras** et **Alertes**. Le journal conserve les 200 derniers mouvements reçus par B6ing et affiche les miniatures disponibles dans AJCloud. **▶** lance le clip au-dessus de la liste. L’icône de téléchargement enregistre la vidéo dans le dossier choisi dans **Réglages**. Tu peux effacer une alerte ou vider le journal avec **Tout effacer**.
+Le menu à gauche alterne entre **Caméras** et **Alertes**. Le journal conserve les 200 derniers mouvements reçus par B6ing et affiche les miniatures disponibles dans AJCloud. À l’ouverture des alertes, le lecteur charge le clip le plus récent au-dessus de la liste et le laisse en pause. **▶** lance la lecture. L’icône de téléchargement enregistre la vidéo dans le dossier choisi dans **Réglages**. Tu peux effacer une alerte ou vider le journal avec **Tout effacer**.
 
 La lecture des enregistrements de la carte microSD reste disponible dans Wansview Cloud. La compatibilité de B6ing a été vérifiée avec des Cinnado B6. La disponibilité du direct et des commandes dépend du service Wansview et du modèle de caméra.
 

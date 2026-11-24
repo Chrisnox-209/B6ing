@@ -12,6 +12,7 @@
 }
 .view-card.keyboard-camera { box-shadow: inset 0 0 0 2px alpha(@b6_cyan, .86); }
 .video-area { background: #0f1721; border-radius: 12px; color: #9bb9d0; }
+.camera-placeholder { color: #f4f6f8; }
 .live-button { border-radius: 10px; background: @b6_cyan; color: @b6_ink; }
 .live-button:hover { background: shade(@b6_cyan, 1.12); }
 

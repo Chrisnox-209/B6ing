@@ -8,7 +8,7 @@ import gi
 gi.require_version('GdkPixbuf', '2.0')
 from gi.repository import Adw, Gdk, GdkPixbuf, GLib, Gtk
 
-from .engine import CameraError
+from .engine import AlertClipUnavailable, CameraError
 
 
 def _preview_texture(image):
@@ -227,12 +227,19 @@ class AlertClipPlayer(Gtk.Box):
         self.pages.add_named(loading, 'loading')
         self.error = Gtk.Label(wrap=True, height_request=64, justify=Gtk.Justification.CENTER)
         self.pages.add_named(self.error, 'error')
-        self.player = Gtk.Video(autoplay=True)
+        self.player = Gtk.Video()
         frame = Gtk.AspectFrame(ratio=16 / 9, obey_child=False, height_request=235)
         frame.set_child(self.player)
         self.pages.add_named(frame, 'video')
 
-    def play(self, worker, camera, entry, name):
+    def play(self, worker, camera, entry, name, *, autoplay=True, on_unavailable=None):
+        if self.key == entry.key and (self.task is not None or self.pages.get_visible_child_name() == 'video'):
+            self.player.set_autoplay(autoplay)
+            if autoplay and self.stream is not None:
+                if self.stream.get_ended() and self.stream.is_seekable():
+                    self.stream.seek(0)
+                self.stream.play()
+            return
         self.close()
         self.temporary = TemporaryDirectory(prefix='b6ing-alert-')
         path = Path(self.temporary.name) / 'clip'
@@ -240,13 +247,14 @@ class AlertClipPlayer(Gtk.Box):
         occurred = entry.occurred_at.astimezone()
         self.title.set_title(name)
         self.title.set_subtitle(f'Clip d’alerte · {occurred:%d/%m/%Y à %H:%M}')
+        self.player.set_autoplay(autoplay)
         self.pages.set_visible_child_name('loading')
         self.set_visible(True)
         download = worker.account.download_alert_clip(camera, entry.identifier, entry.occurred_at, path)
         self.task = worker.submit(download)
-        self.task.add_done_callback(lambda task: GLib.idle_add(self.download_finished, task, path))
+        self.task.add_done_callback(lambda task: GLib.idle_add(self.download_finished, task, path, on_unavailable))
 
-    def download_finished(self, task, path):
+    def download_finished(self, task, path, on_unavailable):
         if task is not self.task:
             return GLib.SOURCE_REMOVE
         self.task = None
@@ -254,6 +262,9 @@ class AlertClipPlayer(Gtk.Box):
             task.result()
         except CancelledError:
             return GLib.SOURCE_REMOVE
+        except AlertClipUnavailable as exc:
+            if self.player.get_autoplay() or on_unavailable is None or not on_unavailable():
+                self.show_error(str(exc))
         except CameraError as exc:
             self.show_error(str(exc))
         except OSError:
