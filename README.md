@@ -8,15 +8,19 @@ B6ing est une application de bureau pour voir et piloter des caméras solaires *
 
 ## Aperçu
 
-Les captures ci-dessous utilisent des images de démonstration.
+Les captures montrent B6ing 0.3.1 avec des images et des données de démonstration.
 
 ### Caméras
 
-![Grille B6ing avec trois caméras, leurs commandes, le niveau de batterie et le signal Wi-Fi](docs/captures/cameras.png)
+![Grille de trois caméras avec le panneau de réglages déplié sous le direct Jardin. Le zoom, les positions favorites et le retour au direct sont visibles.](docs/captures/cameras.png)
 
 ### Alertes
 
-![Page Alertes de B6ing avec des miniatures, un lecteur intégré et les boutons de téléchargement](docs/captures/alertes.png)
+![Page Alertes avec le dernier clip préchargé au-dessus du journal, des miniatures et les boutons de téléchargement.](docs/captures/alertes.png)
+
+### MicroSD
+
+![Page MicroSD avec les jours enregistrés marqués d’une pastille, la frise de la journée, le lecteur et les miniatures des clips.](docs/captures/microsd.png)
 
 ## Fonctionnalités
 
