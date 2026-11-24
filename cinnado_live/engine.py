@@ -18,6 +18,7 @@ import aiohttp
 
 from .vendor_r2.cloud import Client
 from .vendor_r2 import sd
+from .vendor_r2.position_storage import upload_position_placeholder
 from .vendor_r2.session import CameraAuthenticationError, RelayTimeout, SessionRequest, run_session
 
 MOTION_POLL_SECONDS = 20
@@ -183,6 +184,7 @@ class CameraOptions:
     vision_mode: str | None
     battery: BatteryReading | None = None
     wifi: WifiReading | None = None
+    favorite_slots: tuple[int, ...] | None = None
 
     @classmethod
     def from_info(cls, info: dict) -> CameraOptions:
@@ -196,7 +198,25 @@ class CameraOptions:
             vision_mode=next((mode for mode, values in VISION_PROFILES.items() if values == profile), None),
             battery=BatteryReading.from_info(info),
             wifi=WifiReading.from_info(info),
+            favorite_slots=_favorite_slots(info, capabilities),
         )
+
+
+FAVORITE_SLOTS = (1, 2, 3, 4)
+
+
+def _favorite_slots(info, capabilities):
+    if capabilities.get('ptz') not in (1, '1') or capabilities.get('viewAngles', '') not in ('', 1, '1', None):
+        return None
+    favorites = _record(info.get('viewAnglesConfig')).get('viewAngles')
+    if not isinstance(favorites, list):
+        return () if capabilities.get('viewAngles') in (1, '1') else None
+    slots = {
+        _measure(item.get('viewAngle'), 1, 4) for item in favorites
+        if isinstance(item, dict) and _measure(item.get('sensorIdx', 0), 0, 0) == 0
+        and isinstance(item.get('url'), str) and item['url'].strip()
+    }
+    return tuple(slot for slot in FAVORITE_SLOTS if slot in slots)
 
 
 def _record(value) -> dict:
@@ -583,6 +603,55 @@ class Account:
         except (aiohttp.ClientError, TimeoutError, AttributeError, ValueError, TypeError, RuntimeError) as exc:
             raise CameraError('La commande n’a pas été confirmée. Vérifie que la caméra répond et réessaie.') from exc
 
+    async def change_favorite(self, camera, action, slot=None):
+        client = self._client_for(camera)
+        gateway = _endpoint(camera.connection_config.get('appGatewayUrl'))
+
+        async def post(route, data):
+            return await client.post(route, {'sensorIdx': 0, **data}, signed=True,
+                                     base=gateway, device_id=camera.identifier)
+
+        try:
+            options = await self.read_camera_options(camera)
+            slots = options.favorite_slots
+            if slots is None:
+                raise CameraError('Cette caméra ne propose pas de positions favorites.')
+            if action == 'save':
+                if len(slots) >= len(FAVORITE_SLOTS):
+                    raise CameraError('Les quatre positions sont déjà mémorisées.')
+                grant = await post('/v1/upload-token', {'resourceType': 'cam-viewangle',
+                                                        'supportStorageModes': ['oss']})
+                slot = _measure(grant.get('viewAngle'), 1, 4)
+                if (slot is None or slot in slots or grant.get('storageMode') != 'oss'
+                        or grant.get('resourceType') != 'cam-viewangle'
+                        or _measure(grant.get('sensorIdx'), 0, 0) != 0):
+                    raise CameraError('AJCloud n’a pas réservé de position libre compatible.')
+                filename = await upload_position_placeholder(client.session, grant, slot)
+                await post('/v1/upload-notify', {
+                    'resourceType': grant['resourceType'], 'resourceId': grant['resourceId'],
+                    'context': grant['context'], 'storageMode': grant['storageMode'],
+                    'fileName': filename, 'viewAngle': slot,
+                })
+            elif type(slot) is int and slot in slots and action in ('turn', 'remove'):
+                if action == 'turn':
+                    await post('/v1/view-angle-turn', {'viewAngle': slot})
+                    return options
+                await post('/v1/view-angle-removal', {'viewAngles': [slot]})
+            else:
+                raise CameraError('La position sélectionnée a changé. Actualise les positions.')
+
+            for delay in (0, .4, 1):
+                if delay:
+                    await asyncio.sleep(delay)
+                options = await self.read_camera_options(camera)
+                if options.favorite_slots is not None and (slot in options.favorite_slots) == (action == 'save'):
+                    return options
+            raise CameraError('AJCloud n’a pas confirmé la mise à jour de la position.')
+        except CameraError:
+            raise
+        except (aiohttp.ClientError, TimeoutError, KeyError, ValueError, TypeError, RuntimeError) as exc:
+            raise CameraError('La commande de position a échoué. Vérifie que la caméra répond.') from exc
+
     async def play(
         self, camera: Camera, stop: asyncio.Event,
         frame: Callable[[bytes, str, int, int, int | None], Awaitable[None]], status: Callable[[str], None],
@@ -591,7 +660,7 @@ class Account:
         quality: Callable[[], int | None] | None = None,
         listening: Callable[[], bool] | None = None,
         audio: Callable[[bytes, int], Awaitable[None]] | None = None,
-        requested_talk=None, reconnect=None, position_requests=None,
+        requested_talk=None, reconnect=None,
     ) -> None:
         client = self._client_for(camera)
         config = camera.connection_config
@@ -665,8 +734,7 @@ class Account:
                     await run_session(camera.identifier, key, receive, stop, float('inf'), stats,
                                       direction=desired_direction if motorized and direction is not None else None,
                                       quality=quality, listening=listening, on_audio=receive_audio if audio else None,
-                                      requested_talk=requested_talk, on_video_clock=read_clock, reconnect=reconnect,
-                                      position_requests=position_requests if motorized else None)
+                                      requested_talk=requested_talk, on_video_clock=read_clock, reconnect=reconnect)
                 except CameraAuthenticationError as exc:
                     raise CameraError('La B6 a refusé l’authentification vidéo.') from exc
                 except RelayTimeout:

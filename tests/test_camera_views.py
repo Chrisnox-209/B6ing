@@ -1,10 +1,9 @@
 from pathlib import Path
-import struct
 from tempfile import TemporaryDirectory
 import unittest
 
+from cinnado_live.engine import CameraOptions
 from cinnado_live.preferences import GridLayout, Preferences
-from cinnado_live.vendor_r2.camera_protocol import ptz_goto_payload, ptz_position_from_response
 
 
 class CameraViewTests(unittest.TestCase):
@@ -28,8 +27,16 @@ class CameraViewTests(unittest.TestCase):
             preferences.save(path)
             self.assertEqual(Preferences.load(path), preferences)
 
-    def test_position_reading_and_recall_serialize_the_same_coordinates(self):
-        position = ptz_position_from_response(struct.pack('<ii', -13, 36123))
-        self.assertEqual(ptz_goto_payload(position), struct.pack('<B3xHH8x', 112, 65523, 36123))
-        self.assertIsNone(ptz_position_from_response(bytes(4)))
-        self.assertIsNone(ptz_position_from_response(struct.pack('<ii', 1 << 30, 0)))
+    def test_camera_favorites_show_only_saved_slots_for_the_primary_lens(self):
+        metadata = {
+            'capability': {'ptz': '1', 'viewAngles': '1'},
+            'viewAnglesConfig': {'viewAngles': [
+                {'sensorIdx': '0', 'viewAngle': '4', 'url': 'fixture'},
+                {'sensorIdx': '0', 'viewAngle': 3, 'name': 'Placeholder', 'url': ''},
+                {'sensorIdx': '1', 'viewAngle': 2, 'url': 'other lens'},
+                {'sensorIdx': '0', 'viewAngle': '1', 'url': 'fixture'},
+                {'sensorIdx': '0', 'viewAngle': 5, 'url': 'out of range'},
+            ]},
+        }
+        self.assertEqual(CameraOptions.from_info(metadata).favorite_slots, (1, 4))
+        self.assertIsNone(CameraOptions.from_info({}).favorite_slots)

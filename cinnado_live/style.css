@@ -65,6 +65,15 @@ calendar.sd-calendar > grid > label.day-number:checked:not(:selected) {
     background: alpha(@window_fg_color, .05);
 }
 .media-strip > label { padding: 0 6px; }
+.tile-camera-settings {
+    padding: 10px;
+    border-radius: 12px;
+    border: 1px solid alpha(@window_fg_color, .10);
+    background: alpha(@window_fg_color, .04);
+}
+.camera-live-tools > flowboxchild { padding: 0; }
+.fullscreen-position-settings { padding: 0 16px 9px; }
+.favorite-shortcuts > separator { margin: 6px 0; }
 .control-cluster {
     padding: 3px;
     border: 1px solid alpha(@window_fg_color, .12);

@@ -2,6 +2,9 @@
 
 from gi.repository import Gtk
 
+from .camera_grid import icon_button
+from .engine import FAVORITE_SLOTS
+
 
 class CameraControls(Gtk.Box):
     def __init__(self, apply):
@@ -55,3 +58,67 @@ class CameraControls(Gtk.Box):
             else:
                 button.remove_css_class('suggested-action')
                 button.reset_property(Gtk.AccessibleProperty.DESCRIPTION)
+
+
+class FavoriteShortcuts(Gtk.Box):
+    def __init__(self, turn):
+        super().__init__(spacing=2, visible=False, css_classes=['control-cluster', 'favorite-shortcuts'])
+        self.turn = turn
+        self.slots = ()
+
+    def refresh(self, slots, busy):
+        slots = slots or ()
+        self.set_sensitive(not busy)
+        if slots == self.slots:
+            return
+        self.slots = slots
+        while child := self.get_first_child():
+            self.remove(child)
+        self.set_visible(bool(slots))
+        if not slots:
+            return
+        home = icon_button('go-home-symbolic', f'Maison · revenir à la position {slots[0]}')
+        home.connect('clicked', lambda *_: self.turn(self.slots[0]))
+        self.append(home)
+        for slot in slots:
+            self.append(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL))
+            label = f'Rappeler la position {slot}'
+            button = Gtk.Button(label=str(slot), tooltip_text=label, css_classes=['control-icon', 'numeric'])
+            button.update_property([Gtk.AccessibleProperty.LABEL], [label])
+            button.connect('clicked', lambda _, number=slot: self.turn(number))
+            self.append(button)
+
+
+class FavoriteSettings(Gtk.Box):
+    def __init__(self, save, remove):
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=6, visible=False)
+        self.position_buttons = Gtk.Box(spacing=4)
+        self.save_button = Gtk.Button(label='Mémoriser la position actuelle')
+        self.save_button.connect('clicked', lambda *_: save())
+        self.append(self.save_button)
+        self.append(self.position_buttons)
+        self.removers = {}
+        for slot in FAVORITE_SLOTS:
+            button = Gtk.Button(tooltip_text=f'Supprimer la position {slot}', css_classes=['control-icon'])
+            button.set_child(Gtk.Label(label=f'{slot} ×'))
+            button.update_property([Gtk.AccessibleProperty.LABEL], [f'Supprimer la position {slot}'])
+            button.connect('clicked', lambda _, number=slot: remove(number))
+            self.position_buttons.append(button)
+            self.removers[slot] = button
+
+    def refresh(self, slots, *, live, busy):
+        self.set_visible(slots is not None)
+        if slots is None:
+            return
+        self.save_button.set_sensitive(live and not busy and len(slots) < len(FAVORITE_SLOTS))
+        if len(slots) == len(FAVORITE_SLOTS):
+            reason = 'Les quatre positions sont déjà mémorisées.'
+        elif not live:
+            reason = 'Ouvre le direct pour mémoriser l’orientation actuelle.'
+        else:
+            reason = None
+        self.save_button.set_tooltip_text(reason)
+        self.position_buttons.set_visible(bool(slots))
+        for slot, button in self.removers.items():
+            button.set_visible(slot in slots)
+            button.set_sensitive(not busy)

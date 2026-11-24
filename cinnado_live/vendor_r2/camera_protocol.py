@@ -46,8 +46,6 @@ def ack_datagram(channel, sequence):
     return b'\xf1\xd1' + len(body).to_bytes(2, 'big') + body
 
 PTZ_COMMAND = 0x110
-PTZ_POSITION_REQUEST = 321
-PTZ_POSITION_RESPONSE = 322
 PTZ_DIRECTIONS = {'up': 1, 'down': 2, 'left': 3, 'right': 4}
 
 def ptz_datagram(access_key, direction, sequence):
@@ -60,19 +58,6 @@ def ptz_datagram(access_key, direction, sequence):
 def valid_ptz_position(value):
     return (isinstance(value, (tuple, list)) and len(value) == 2
             and all(type(axis) is int and -32768 <= axis <= 65535 for axis in value))
-
-
-def ptz_position_from_response(payload):
-    if len(payload) < 8:
-        return None
-    position = struct.unpack_from('<ii', payload)
-    return position if valid_ptz_position(position) else None
-
-
-def ptz_goto_payload(position):
-    if not valid_ptz_position(position):
-        raise ValueError('Invalid PTZ position')
-    return struct.pack('<B3xHH8x', 112, position[0] & 0xffff, position[1] & 0xffff)
 
 
 @dataclass(frozen=True)

@@ -1,15 +1,9 @@
 """Bounded, cancellable session using the validated R2 wire protocol."""
 import asyncio
-from collections.abc import Callable
 from dataclasses import dataclass
-from queue import Empty
 import socket
 import time
-from .camera_protocol import (
-    PTZ_COMMAND, PTZ_POSITION_REQUEST, PTZ_POSITION_RESPONSE, ControlStream, TalkFormat,
-    ack_datagram, auth_datagram, control_datagram, ptz_datagram, ptz_goto_payload,
-    ptz_position_from_response, rc4,
-)
+from .camera_protocol import ControlStream, TalkFormat, ack_datagram, auth_datagram, control_datagram, ptz_datagram, rc4
 from .wire import SERVERS, identity, relay_request, relay_join, relay_target
 
 RELAYS = [('172.235.190.14', 12300), ('172.236.209.56', 12300)]
@@ -41,12 +35,6 @@ class PendingCommand:
     voice: bool = False
 
 
-@dataclass(frozen=True)
-class PositionRequest:
-    target: tuple[int, int] | None
-    complete: Callable[[tuple[int, int] | None], None]
-
-
 class LiveControls:
     def __init__(self, key, network, peer):
         self.key, self.network, self.peer = key, network, peer
@@ -59,10 +47,6 @@ class LiveControls:
         self.talk_format = None
         self.talk_deadline = None
         self.voice_acknowledged = 0
-        self.position = None
-        self.last_position = None
-        self.position_next = 0
-        self.position_deadline = 0
 
     async def send(self, make_packet, now, *, voice=False):
         sequence = self.sequence
@@ -73,17 +57,14 @@ class LiveControls:
 
     async def set_direction(self, direction, now):
         self.direction = direction
-        self.last_position = None
         await self.send(lambda sequence: ptz_datagram(self.key, direction, sequence), now)
 
     async def command(self, code, payload, now):
         await self.send(lambda sequence: control_datagram(self.key, code, payload, sequence), now)
 
-    async def update(self, desired, now, *, quality=None, listening=False, talk=None, positions=None):
+    async def update(self, desired, now, *, quality=None, listening=False, talk=None):
         if self.direction is not None and self.direction != desired:
             await self.set_direction(None, now)
-        if self.position is not None and (desired is not None or now >= self.position_deadline):
-            self.finish_position(None)
         if self.talk is not None and self.talk is not talk:
             await self.stop_talk(now)
         if self.talk_deadline is not None and now >= self.talk_deadline:
@@ -113,49 +94,8 @@ class LiveControls:
             self.talk = talk
             self.talk_deadline = now + 4
             await self.command(TALK_START, b'', now)
-        elif positions is not None and desired is None and await self.update_position(positions, now):
-            return
         elif self.talk_format is not None and talk is self.talk:
             await self.send_voice(now)
-
-    async def update_position(self, requests, now):
-        if self.position is None:
-            try:
-                self.position = requests.get_nowait()
-            except Empty:
-                return False
-            if self.position.target is None and self.last_position is not None:
-                self.finish_position(self.last_position)
-                return True
-            self.position_deadline = now + (7 if self.position.target is not None else 4)
-            if self.position.target is not None:
-                self.last_position = None
-                await self.command(PTZ_COMMAND, ptz_goto_payload(self.position.target), now)
-                self.position_next = now + .4
-                return True
-            self.position_next = now
-        if now < self.position_next:
-            return False
-        await self.command(PTZ_POSITION_REQUEST, b'', now)
-        self.position_next = now + .6
-        return True
-
-    def position_response(self, payload):
-        value = ptz_position_from_response(rc4(self.key.encode(), payload))
-        if value is None:
-            return
-        if self.direction is None:
-            self.last_position = value
-        if self.position is None:
-            return
-        target = self.position.target
-        if target is None or all(abs(a - b) <= 1 for a, b in zip(target, value)):
-            self.finish_position(value)
-
-    def finish_position(self, value):
-        request, self.position = self.position, None
-        if request is not None:
-            request.complete(value)
 
     def talk_response(self, payload):
         if self.talk_deadline is not None:
@@ -179,7 +119,6 @@ class LiveControls:
                 self.voice_acknowledged += 1
 
     async def stop(self):
-        self.finish_position(None)
         if self.direction is not None:
             await self.set_direction(None, time.monotonic())
         if self.talk is not None:
@@ -209,7 +148,7 @@ class UdpNetwork:
 async def run_session(device_id, key, on_frame, stop, deadline, stats, network_factory=UdpNetwork, *, direction=None,
                       quality=None, listening=None, on_audio=None, requested_talk=None,
                       request: SessionRequest | None = None, on_control=None, on_video_clock=None,
-                      reconnect=None, position_requests=None):
+                      reconnect=None):
     """Deliver Annex B frames until stop/deadline; never write media or keys to disk."""
     network = network_factory()
     allocations = {}
@@ -267,8 +206,7 @@ async def run_session(device_id, key, on_frame, stop, deadline, stats, network_f
                 await controls.update(direction() if direction is not None else None, now,
                                       quality=quality() if quality is not None else None,
                                       listening=listening() if listening is not None else False,
-                                      talk=requested_talk() if requested_talk is not None else None,
-                                      positions=position_requests)
+                                      talk=requested_talk() if requested_talk is not None else None)
             try:
                 data, peer = await network.receive()
             except asyncio.TimeoutError:
@@ -326,8 +264,6 @@ async def run_session(device_id, key, on_frame, stop, deadline, stats, network_f
                         video_acked=True
                     elif command == TALK_RESPONSE and controls is not None:
                         controls.talk_response(payload)
-                    elif command == PTZ_POSITION_RESPONSE and controls is not None:
-                        controls.position_response(payload)
                     elif command == 'media' and video_at is not None:
                         codec=int.from_bytes(payload[6:8],'little')
                         raw=payload[48:]
@@ -374,8 +310,7 @@ async def run_session(device_id, key, on_frame, stop, deadline, stats, network_f
             if peer in allocations and data[:4]==bytes.fromhex('f1840058') and len(data)==92:
                 if data[4:7]==b'ajy' and data[16:80].split(b'\0',1)[0]==device_id.encode():
                     selected=peer
-                    if any(control is not None for control in
-                           (direction, quality, listening, requested_talk, position_requests)):
+                    if any(control is not None for control in (direction, quality, listening, requested_talk)):
                         controls = LiveControls(key, network, peer)
                     stats['relay_selected']=True
                     auth=auth_datagram(key,int(time.time()))

@@ -59,6 +59,7 @@ class Preferences:
     motion_notifications: bool = True
     camera_grid: GridLayout = GridLayout()
     camera_views: dict[str, GridLayout] = field(default_factory=dict)
+    # Keep positions saved by older versions when rewriting the preferences.
     camera_positions: dict[str, dict[str, tuple[int, int]]] = field(default_factory=dict)
 
     @classmethod

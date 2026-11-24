@@ -24,8 +24,8 @@ from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gst, Gtk, Pango
 
 from .alerts import AlertEntry, AlertJournal
 from .alerts_view import AlertsView
-from .camera_controls import CameraControls
-from .camera_grid import CameraGrid, icon_button, name_prompt
+from .camera_controls import CameraControls, FavoriteSettings, FavoriteShortcuts
+from .camera_grid import CameraGrid, icon_button
 from .desktop import (
     APP_ICON_NAME, APP_ID, APP_LAUNCHER_ICON, APP_NAME, ICON_SEARCH_PATH, autostart_enabled, set_autostart,
 )
@@ -39,7 +39,6 @@ from .sd_view import SdView
 from .settings_dialog import SettingsDialog
 from .speak_button import SpeakButton
 from .tray import TrayIcon
-from .vendor_r2.session import PositionRequest
 
 STATE = Path(os.environ.get('XDG_STATE_HOME') or Path.home() / '.local/state') / 'cinnado-live'
 PREFERENCES_PATH = Path(os.environ.get('XDG_CONFIG_HOME') or Path.home() / '.config') / 'cinnado-live/settings.json'
@@ -242,12 +241,11 @@ class CameraTile(Gtk.Box):
         self.task = None
         self.frames = None
         self.motion = None
-        self.clock = self.reconnect = self.position_requests = None
+        self.clock = self.reconnect = None
         self.catchup_until = None
         self.delay_checked = 0
-        self.favorite_request = None
-        self.favorite_refresh = None
         self.fullscreen_favorites = None
+        self.fullscreen_favorite_settings = None
         self.zoom = VideoZoom()
         self.motorized = False
         self.recording = None
@@ -328,7 +326,7 @@ class CameraTile(Gtk.Box):
         self.add_capture_buttons(self.camera_actions)
         self.quality_choice = self.quality_selector()
         self.quality_choice.connect('notify::selected', self.change_quality)
-        self.camera_actions.append(self.quality_choice)
+        self.quality_choice.set_sensitive(False)
         self.resolution = Gtk.Label()
         self.resolution.add_css_class('dim-label')
         self.resolution.add_css_class('numeric')
@@ -337,9 +335,19 @@ class CameraTile(Gtk.Box):
         self.delay_label.set_tooltip_text('Retard supplémentaire estimé depuis l’ouverture du flux')
         self.live_tools, _, self.favorites = self.make_live_tools(self.delay_label)
         self.live_tools.set_sensitive(False)
-        self.append(self.live_tools)
         self.controls = CameraControls(self.change_camera_option)
-        self.append(self.controls)
+        self.favorite_settings = self.make_favorite_settings()
+        settings = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, css_classes=['tile-camera-settings'])
+        settings.append(self.live_tools)
+        quality = Gtk.Box(spacing=8)
+        quality.append(Gtk.Label(label='Qualité du direct', xalign=0, hexpand=True))
+        quality.append(self.quality_choice)
+        settings.append(quality)
+        settings.append(self.controls)
+        settings.append(self.favorite_settings)
+        gear, settings_panel = self.camera_settings_disclosure(settings, 'Réglages de cette caméra')
+        header.insert_child_after(gear, self.name_label)
+        self.append(settings_panel)
 
     def set_display_name(self, name):
         self.name_label.set_text(name)
@@ -348,108 +356,69 @@ class CameraTile(Gtk.Box):
             self.fullscreen_window.set_title(name)
 
     def make_live_tools(self, delay, *, fullscreen=False):
-        row = Gtk.Box(spacing=6)
         zoom = ZoomButtons(self.zoom)
-        row.append(zoom)
-        favorites = Gtk.MenuButton(icon_name='starred-symbolic', tooltip_text='Positions favorites',
-                                   visible=self.motorized, css_classes=['control-icon'])
-        favorites.update_property([Gtk.AccessibleProperty.LABEL], ['Positions favorites'])
-        row.append(favorites)
+        favorites = FavoriteShortcuts(lambda slot: self.change_favorite('turn', slot))
         jump = icon_button('media-seek-forward-symbolic', 'Revenir au direct')
         if fullscreen:
             jump.set_child(Adw.ButtonContent(icon_name='media-seek-forward-symbolic', label='Revenir au direct'))
         jump.connect('clicked', self.return_to_live)
-        row.append(jump)
-        row.append(delay)
-        return row, zoom, favorites
-
-    def refresh_favorites(self):
-        root = self.get_root()
-        if not isinstance(root, Window):
-            return
-        favorites = root.preferences.camera_positions.get(self.camera.identifier, {})
-        for button in (self.favorites, self.fullscreen_favorites):
-            if button is None:
-                continue
-            button.set_visible(self.motorized)
-            popover = Gtk.Popover()
-            content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
-            add = Gtk.Button(label='Mémoriser la position actuelle…', css_classes=['suggested-action'])
-            add.connect('clicked', lambda *_args, menu=popover: self.name_favorite(menu))
-            content.append(add)
-            if favorites:
-                rows = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-                scroll = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, max_content_height=250,
-                                            propagate_natural_height=True, child=rows)
-                content.append(scroll)
-                for label, position in favorites.items():
-                    row = Gtk.Box(spacing=4)
-                    go = Gtk.Button(label=label, hexpand=True)
-                    go.set_tooltip_text(f'Orienter la caméra vers « {label} »')
-                    go.connect('clicked', lambda _, name=label, value=position, menu=popover:
-                               (menu.popdown(), self.request_favorite(name, value)))
-                    row.append(go)
-                    remove = icon_button('user-trash-symbolic', f'Supprimer la position « {label} »')
-                    remove.connect('clicked', lambda _, name=label: self.save_favorite(name, None))
-                    row.append(remove)
-                    rows.append(row)
-            popover.set_child(content)
-            button.set_popover(popover)
-
-    def name_favorite(self, popover):
-        popover.popdown()
-        parent = self.fullscreen_window or self
-        name_prompt(parent, 'Mémoriser une position', 'Le nom existant d’une position permet de la mettre à jour.',
-                    lambda name: self.request_favorite(name, None))
-
-    def save_favorite(self, name, value):
-        root = self.get_root()
-        if not isinstance(root, Window):
-            return
-        positions = root.preferences.camera_positions.copy()
-        favorites = positions.get(self.camera.identifier, {}).copy()
-        label = next((key for key in favorites if key.casefold() == name.casefold()), name)
-        if value is None:
-            favorites.pop(label, None)
+        recovery = Gtk.Box(spacing=6)
+        recovery.append(jump)
+        recovery.append(delay)
+        if fullscreen:
+            tools = Gtk.Box(spacing=6)
+            for group in (zoom, favorites, recovery):
+                tools.append(group)
         else:
-            favorites[label] = value
-        positions[self.camera.identifier] = favorites
-        if root.update_view_preferences(camera_positions=positions):
-            self.refresh_favorites()
-            self.notify(f'Position « {label} » mémorisée.' if value is not None else f'Position « {label} » supprimée.')
+            tools = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, max_children_per_line=3,
+                                column_spacing=6, row_spacing=6, css_classes=['camera-live-tools'])
+            for group in (zoom, favorites, recovery):
+                item = Gtk.FlowBoxChild(child=group, focusable=False, halign=Gtk.Align.START)
+                group.bind_property('visible', item, 'visible', GObject.BindingFlags.SYNC_CREATE)
+                tools.append(item)
+        return tools, zoom, favorites
 
-    def request_favorite(self, name, target, *, refreshed=False):
-        if self.position_requests is None or not self.motorized or not self.live_tools.is_sensitive():
-            self.notify('Ouvre le direct pour utiliser les positions favorites.')
+    @staticmethod
+    def camera_settings_disclosure(content, label):
+        panel = Gtk.Revealer(child=content, transition_type=Gtk.RevealerTransitionType.SLIDE_DOWN,
+                             transition_duration=160)
+        button = Gtk.ToggleButton(icon_name='emblem-system-symbolic', tooltip_text=label,
+                                  css_classes=['control-icon'])
+        button.update_property([Gtk.AccessibleProperty.LABEL], [label])
+        button.update_state([Gtk.AccessibleState.EXPANDED], [0])
+        button.bind_property('active', panel, 'reveal-child', GObject.BindingFlags.SYNC_CREATE)
+        button.connect('toggled', lambda gear: gear.update_state([Gtk.AccessibleState.EXPANDED], [int(gear.get_active())]))
+        return button, panel
+
+    def make_favorite_settings(self):
+        return FavoriteSettings(lambda: self.change_favorite('save'), self.confirm_remove_favorite)
+
+    def confirm_remove_favorite(self, slot):
+        dialog = Adw.AlertDialog(heading=f'Supprimer la position {slot} ?',
+                                 body='La position sera aussi supprimée de Wansview Cloud.')
+        dialog.add_response('cancel', 'Annuler')
+        dialog.add_response('remove', 'Supprimer')
+        dialog.set_response_appearance('remove', Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_close_response('cancel')
+        dialog.connect('response::remove', lambda *_: self.change_favorite('remove', slot))
+        dialog.present(self.fullscreen_window or self)
+
+    def change_favorite(self, action, slot=None):
+        if self.controls_task is not None:
             return
-        if self.favorite_request is not None or self.favorite_refresh is not None:
-            self.notify('Une commande de position est déjà en cours.')
+        if action == 'save' and not self.live_tools.is_sensitive():
+            self.notify('Ouvre le direct pour mémoriser l’orientation actuelle.')
             return
-        self.release_joysticks()
-        if isinstance(root := self.get_root(), Window):
-            root.keyboard.release()
-        marker = self.favorite_request = object()
-
-        def done(value):
-            GLib.idle_add(self.favorite_done, marker, name, target, value, refreshed)
-
-        self.position_requests.put_nowait(PositionRequest(None if refreshed else target, done))
-
-    def favorite_done(self, marker, name, target, value, refreshed):
-        if self.favorite_request is marker:
-            self.favorite_request = None
-            if (value is None and not refreshed and self.recording is None
-                    and self.live_tools.is_sensitive()):
-                self.favorite_refresh = name, target
-                self.notify('Reconnexion pour vérifier la position de la caméra…')
-                self.reconnect.set()
-            elif value is None or (target is not None and any(abs(a - b) > 1 for a, b in zip(target, value))):
-                self.notify('La caméra n’a pas confirmé sa position.')
-            elif target is None:
-                self.save_favorite(name, value)
-            else:
-                self.notify(f'Position « {name} » atteinte.')
-        return GLib.SOURCE_REMOVE
+        if action in ('save', 'turn'):
+            self.release_joysticks()
+            if isinstance(root := self.get_root(), Window):
+                root.keyboard.release()
+        message = {
+            'save': 'Position mémorisée.',
+            'turn': f'Rappel de la position {slot} demandé.',
+            'remove': f'Position {slot} supprimée.',
+        }[action]
+        self.run_camera_control(self.worker.account.change_favorite(self.camera, action, slot), message=message)
 
     def return_to_live(self, *_):
         if self.preview is None or self.catchup_until is not None:
@@ -524,6 +493,9 @@ class CameraTile(Gtk.Box):
             options = future.result()
         except (CameraError, CancelledError):
             options = None
+        if options is not None and self.controls_task is None:
+            self.camera_options = options
+            self.refresh_controls()
         self.update_camera_indicators(options)
         return False
 
@@ -659,9 +631,17 @@ class CameraTile(Gtk.Box):
             root.toast(message)
 
     def refresh_controls(self):
+        busy = self.controls_task is not None
         for controls in (self.controls, self.fullscreen_controls):
             if controls is not None:
-                controls.refresh(self.camera_options, self.controls_task is not None)
+                controls.refresh(self.camera_options, busy)
+        slots = self.camera_options.favorite_slots if self.camera_options is not None else None
+        for shortcuts in (self.favorites, self.fullscreen_favorites):
+            if shortcuts is not None:
+                shortcuts.refresh(slots, busy)
+        for settings in (self.favorite_settings, self.fullscreen_favorite_settings):
+            if settings is not None:
+                settings.refresh(slots, live=self.live_tools.is_sensitive(), busy=busy)
 
     def load_camera_options(self):
         self.run_camera_control(self.worker.account.read_camera_options(self.camera))
@@ -684,6 +664,9 @@ class CameraTile(Gtk.Box):
         self.run_camera_control(request(self.camera_options), message=message)
 
     def run_camera_control(self, request, *, message=None):
+        if self.camera_status_task is not None:
+            self.camera_status_task.cancel()
+            self.camera_status_task = None
         self.controls_task = self.worker.submit(request)
         self.refresh_controls()
         self.controls_task.add_done_callback(
@@ -742,7 +725,6 @@ class CameraTile(Gtk.Box):
         motion = self.motion = MotionInput()
         clock = self.clock = LiveClock()
         reconnect = self.reconnect = threading.Event()
-        positions = self.position_requests = Queue(maxsize=1)
         self.button.set_label('Arrêter')
         self.status.set_label('Ouverture du direct…')
         note(f'stream_requested camera={self.index}')
@@ -778,7 +760,7 @@ class CameraTile(Gtk.Box):
                                            quality=lambda: self.quality_code,
                                            listening=lambda: self.audio_enabled, audio=receive_audio,
                                            requested_talk=lambda: self.talk_request,
-                                           reconnect=reconnect, position_requests=positions)
+                                           reconnect=reconnect)
 
         self.task = self.worker.submit(request())
         self.task.add_done_callback(lambda future: GLib.idle_add(self.finish, generation, future))
@@ -793,13 +775,9 @@ class CameraTile(Gtk.Box):
             self.joystick.set_sensitive(False)
             self.camera_actions.set_sensitive(False)
             self.live_tools.set_sensitive(False)
+            self.quality_choice.set_sensitive(False)
+            self.refresh_controls()
             self.delay_label.set_label('Retard —')
-            try:
-                queued = self.position_requests.get_nowait()
-            except Empty:
-                pass
-            else:
-                queued.complete(None)
             self.resolution.set_text('')
             if self.recording is not None:
                 self.stop_recording()
@@ -864,11 +842,18 @@ class CameraTile(Gtk.Box):
         delay = Gtk.Label(css_classes=['dim-label', 'numeric'])
         live_tools, zoom_buttons, self.fullscreen_favorites = self.make_live_tools(delay, fullscreen=True)
         toolbar.append(live_tools)
+        self.fullscreen_favorite_settings = self.make_favorite_settings()
+        self.fullscreen_favorite_settings.add_css_class('fullscreen-position-settings')
+        favorite_gear, favorites_panel = self.camera_settings_disclosure(
+            self.fullscreen_favorite_settings, 'Gérer les positions')
+        toolbar.append(favorite_gear)
+        layout.append(favorites_panel)
+        bindings.append(self.fullscreen_favorite_settings.bind_property(
+            'visible', favorite_gear, 'visible', GObject.BindingFlags.SYNC_CREATE))
         toolbar.append(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL))
         self.fullscreen_controls = CameraControls(self.change_camera_option)
         toolbar.append(self.fullscreen_controls)
         self.refresh_controls()
-        self.refresh_favorites()
         bindings.extend((
             self.audio_button.bind_property('active', sound, 'active',
                                             GObject.BindingFlags.SYNC_CREATE | GObject.BindingFlags.BIDIRECTIONAL),
@@ -906,6 +891,7 @@ class CameraTile(Gtk.Box):
             self.fullscreen_toasts = None
             self.fullscreen_controls = None
             self.fullscreen_favorites = None
+            self.fullscreen_favorite_settings = None
             self.fullscreen_record_button = None
             self.fullscreen_indicators = None
             self.fullscreen_window = None
@@ -1036,11 +1022,8 @@ class CameraTile(Gtk.Box):
                 root.select_camera(self)
             self.camera_actions.set_sensitive(True)
             self.live_tools.set_sensitive(True)
-            self.refresh_favorites()
-            if self.favorite_refresh is not None:
-                name, target = self.favorite_refresh
-                self.favorite_refresh = None
-                self.request_favorite(name, target, refreshed=True)
+            self.quality_choice.set_sensitive(True)
+            self.refresh_controls()
             note(f'live_frame_decoded camera={self.index}')
         return False
 
@@ -1092,17 +1075,16 @@ class CameraTile(Gtk.Box):
         self.preview_token = None
         self.frames = None
         self.motion = None
-        self.clock = self.reconnect = self.position_requests = None
+        self.clock = self.reconnect = None
         self.catchup_until = None
-        self.favorite_request = None
-        self.favorite_refresh = None
         self.zoom.set_zoom(1)
         self.motorized = False
         self.joystick.set_visible(False)
         self.joystick.set_sensitive(False)
         self.camera_actions.set_sensitive(False)
         self.live_tools.set_sensitive(False)
-        self.favorites.set_visible(False)
+        self.quality_choice.set_sensitive(False)
+        self.refresh_controls()
         self.delay_label.set_label('Retard —')
         self.resolution.set_text('')
         self.empty.set_visible(True)
