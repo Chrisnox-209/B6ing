@@ -4,6 +4,7 @@ from pathlib import Path
 
 from gi.repository import Adw, Gio, GLib, Gtk
 
+from . import __version__
 from .desktop import APP_NAME, autostart_enabled
 from .preferences import Preferences
 
@@ -68,6 +69,7 @@ class SettingsDialog(Adw.Dialog):
         self.toasts = Adw.ToastOverlay(child=toolbar)
         self.set_child(self.toasts)
         header = Adw.HeaderBar()
+        header.set_title_widget(Adw.WindowTitle(title=self.get_title(), subtitle=f'{APP_NAME} · Version {__version__}'))
         toolbar.add_top_bar(header)
         apply = Gtk.Button(label='Enregistrer')
         apply.add_css_class('suggested-action')
