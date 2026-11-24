@@ -6,6 +6,18 @@
 
 B6ing est une application de bureau pour voir et piloter des caméras solaires **Cinnado B6** sur Ubuntu. Elle affiche les directs de ton compte Wansview Cloud dans une grille GTK 4 et libadwaita, sans téléphone, Wine ni Waydroid.
 
+## Aperçu
+
+Les captures ci-dessous utilisent des images de démonstration.
+
+### Caméras
+
+![Grille B6ing avec trois caméras, leurs commandes, le niveau de batterie et le signal Wi-Fi](docs/captures/cameras.png)
+
+### Alertes
+
+![Page Alertes de B6ing avec des miniatures, un lecteur intégré et les boutons de téléchargement](docs/captures/alertes.png)
+
 ## Fonctionnalités
 
 - **Direct** en grille ou en plein écran, profils Haute et Éco, tentative de reconnexion après une coupure.
@@ -13,6 +25,7 @@ B6ing est une application de bureau pour voir et piloter des caméras solaires *
 - **Audio** pour écouter la caméra et parler en maintenant le bouton microphone.
 - **Captures et enregistrements** en PNG et MKV, avec deux dossiers configurables. Les noms de fichiers reprennent le nom de la caméra et l’heure de début, avec la date.
 - **État des caméras** avec niveau de batterie, signal Wi-Fi et notifications de mouvement, selon les données renvoyées par Wansview Cloud.
+- **Journal d’alertes** avec miniatures, lecteur intégré et téléchargement des clips disponibles dans AJCloud.
 - **Intégration Ubuntu** avec mémorisation facultative du compte dans le trousseau, icône de zone de notification et démarrage réduit à l’ouverture de session.
 
 ## Installation sur Ubuntu
@@ -39,6 +52,8 @@ Ouvre **B6ing** depuis le menu Applications ou lance `.venv/bin/python -m cinnad
 1. Connecte-toi avec le compte Wansview Cloud auquel les caméras sont déjà associées. Active **Mémoriser le compte sur ce PC** pour utiliser le trousseau Ubuntu.
 2. Clique sur **Voir le direct**. Pour piloter une caméra au clavier, sélectionne sa vignette puis maintiens **↑**, **↓**, **←** ou **→**. En plein écran, les flèches pilotent la caméra affichée.
 3. Ouvre **Réglages** pour renommer les caméras, choisir les dossiers des photos et vidéos, recevoir les alertes de mouvement ou activer le démarrage réduit. Utilise le menu de l’icône de notification pour réafficher la fenêtre ou quitter B6ing.
+
+Le menu à gauche alterne entre **Caméras** et **Alertes**. Le journal conserve les 200 derniers mouvements reçus par B6ing et affiche les miniatures disponibles dans AJCloud. **▶** lance le clip au-dessus de la liste. L’icône de téléchargement enregistre la vidéo dans le dossier choisi dans **Réglages**. Tu peux effacer une alerte ou vider le journal avec **Tout effacer**.
 
 La lecture des enregistrements de la carte microSD reste disponible dans Wansview Cloud. La compatibilité de B6ing a été vérifiée avec des Cinnado B6. La disponibilité du direct et des commandes dépend du service Wansview et du modèle de caméra.
 
