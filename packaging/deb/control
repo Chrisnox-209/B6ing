@@ -1,0 +1,14 @@
+Package: b6ing
+Version: {version}
+Section: video
+Priority: optional
+Architecture: all
+Maintainer: Chrisnox-209 <89594242+Chrisnox-209@users.noreply.github.com>
+Installed-Size: {installed_size}
+Depends: ca-certificates, python3, python3-gi, python3-aiohttp (>= 3.13), python3-nacl (>= 1.5), gir1.2-gtk-4.0, gir1.2-adw-1 (>= 1.5), gir1.2-graphene-1.0, gir1.2-gstreamer-1.0, gir1.2-secret-1, gstreamer1.0-gtk4, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-libav
+Recommends: gnome-keyring
+Homepage: https://github.com/Chrisnox-209/B6ing
+Description: Desktop viewer for Cinnado B6 cameras
+ B6ing shows live streams and motion alerts from a Wansview Cloud
+ account and supports camera controls and microSD playback on
+ compatible models.

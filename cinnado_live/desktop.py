@@ -12,6 +12,7 @@ APP_ICON_NAME = 'b6ing-eye-symbolic'
 ICON_SEARCH_PATH = SOURCE / 'assets' / 'icons'
 APP_ICON = ICON_SEARCH_PATH / 'hicolor' / 'scalable' / 'apps' / f'{APP_ICON_NAME}.svg'
 APP_LAUNCHER_ICON = APP_ICON.with_name('b6ing-launcher.svg')
+SYSTEM_EXECUTABLE = '/usr/bin/b6ing'
 
 
 def desktop_quote(value: str) -> str:
@@ -20,20 +21,34 @@ def desktop_quote(value: str) -> str:
 
 
 def write_launcher(path: Path, *, minimized: bool = False) -> Path:
+    if (SOURCE / 'b6ing').is_file():
+        return _write_entry(path, packaged_launcher(minimized=minimized))
     python = SOURCE / '.venv/bin/python'
     if not python.is_file():
         raise FileNotFoundError('L’environnement Python de B6ing est introuvable.')
-    command = f'{desktop_quote(str(python))} -m cinnado_live'
+    return _write_entry(path, _launcher(
+        f'{desktop_quote(str(python))} -m cinnado_live', str(APP_LAUNCHER_ICON),
+        minimized=minimized, working_directory=SOURCE,
+    ))
+
+
+def packaged_launcher(*, minimized: bool = False) -> str:
+    return _launcher(SYSTEM_EXECUTABLE, APP_LAUNCHER_ICON.stem, minimized=minimized)
+
+
+def _launcher(command: str, icon: str, *, minimized: bool, working_directory: Path | None = None) -> str:
     if minimized:
         command += ' --minimized'
-    content = '\n'.join([
+    lines = [
         '[Desktop Entry]', 'Version=1.0', 'Type=Application', f'Name={APP_NAME}',
         'Comment=Voir les caméras solaires Cinnado B6 sur Ubuntu',
-        f'Exec={command}', f'Path={SOURCE}', f'Icon={APP_LAUNCHER_ICON}',
+        f'Exec={command}', f'Icon={icon}',
         'Terminal=false', 'Categories=AudioVideo;Video;', 'Keywords=Be Seeing;Wansview;Cinnado;Caméra;',
-        f'StartupWMClass={APP_ID}', f'StartupNotify={str(not minimized).lower()}', '',
-    ])
-    return _write_entry(path, content)
+        f'StartupWMClass={APP_ID}', f'StartupNotify={str(not minimized).lower()}',
+    ]
+    if working_directory is not None:
+        lines.append(f'Path={working_directory}')
+    return '\n'.join([*lines, ''])
 
 
 def _write_entry(path: Path, content: str) -> Path:

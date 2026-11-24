@@ -31,7 +31,7 @@ from .desktop import (
 )
 from .engine import Account, CameraError
 from .joystick import CameraKeyboard, Joystick, MotionInput
-from . import keyring
+from . import __version__, keyring
 from .live_view import LiveClock, VideoZoom, ZoomButtons
 from .media import AudioPlayer, MicrophoneCapture, Recording, TalkRequest, has_keyframe, publish_media_file, save_snapshot, snapshot
 from .preferences import Preferences
@@ -1839,7 +1839,14 @@ class Application(Adw.Application):
         Adw.Application.do_shutdown(self)
 
 
-if __name__ == '__main__':
+def main():
+    if sys.argv[1:] == ['--version']:
+        print(f'{APP_NAME} {__version__}')
+        return 0
     GLib.set_application_name(APP_NAME)
     Gst.init(None)
-    sys.exit(Application().run(sys.argv))
+    return Application().run(sys.argv)
+
+
+if __name__ == '__main__':
+    sys.exit(main())
