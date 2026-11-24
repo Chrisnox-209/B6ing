@@ -20,12 +20,14 @@ Les captures ci-dessous utilisent des images de démonstration.
 
 ## Fonctionnalités
 
-- **Direct** en grille ou en plein écran, profils Haute et Éco, tentative de reconnexion après une coupure.
+- **Direct** en grille personnalisable ou en plein écran, vues mémorisées, profils Haute et Éco, retard estimé et bouton de retour au direct.
 - **Commandes** sur chaque vignette et en plein écran. Oriente la caméra au joystick ou avec les flèches du clavier. Pilote la lumière, la sirène et la vision jour/nuit.
+- **Cadrage** avec zoom numérique jusqu’à 4× et positions favorites sur les caméras compatibles.
 - **Audio** pour écouter la caméra et parler en maintenant le bouton microphone.
 - **Captures et enregistrements** en PNG et MKV, avec deux dossiers configurables. Les noms de fichiers reprennent le nom de la caméra et l’heure de début, avec la date.
 - **État des caméras** avec niveau de batterie, signal Wi-Fi et notifications de mouvement, selon les données renvoyées par Wansview Cloud.
 - **Journal d’alertes** avec miniatures, lecteur intégré et téléchargement des clips disponibles dans AJCloud.
+- **MicroSD** avec calendrier, pastilles sur les jours enregistrés, frise cliquable, miniatures et lecture à distance sur les caméras compatibles.
 - **Intégration Ubuntu** avec mémorisation facultative du compte dans le trousseau, icône de zone de notification et démarrage réduit à l’ouverture de session.
 
 ## Installation sur Ubuntu
@@ -53,9 +55,13 @@ Ouvre **B6ing** depuis le menu Applications ou lance `.venv/bin/python -m cinnad
 2. Clique sur **Voir le direct**. Pour piloter une caméra au clavier, sélectionne sa vignette puis maintiens **↑**, **↓**, **←** ou **→**. En plein écran, les flèches pilotent la caméra affichée.
 3. Ouvre **Réglages** pour renommer les caméras, choisir les dossiers des photos et vidéos, recevoir les alertes de mouvement ou activer le démarrage réduit. Utilise le menu de l’icône de notification pour réafficher la fenêtre ou quitter B6ing.
 
-Le menu à gauche alterne entre **Caméras** et **Alertes**. Le journal conserve les 200 derniers mouvements reçus par B6ing et affiche les miniatures disponibles dans AJCloud. À l’ouverture des alertes, le lecteur charge le clip le plus récent au-dessus de la liste et le laisse en pause. **▶** lance la lecture. L’icône de téléchargement enregistre la vidéo dans le dossier choisi dans **Réglages**. Tu peux effacer une alerte ou vider le journal avec **Tout effacer**.
+Dans **Caméras**, clique sur **Modifier la grille**. Glisse les vignettes avec la poignée ou utilise les flèches. **Agrandir** donne toute la largeur à une caméra. L’icône de sauvegarde mémorise la disposition sous un nom. Clique sur ce nom pour la retrouver.
 
-La lecture des enregistrements de la carte microSD reste disponible dans Wansview Cloud. La compatibilité de B6ing a été vérifiée avec des Cinnado B6. La disponibilité du direct et des commandes dépend du service Wansview et du modèle de caméra.
+Pendant le direct, utilise **−** et **+** pour zoomer jusqu’à 4×, puis glisse dans l’image pour déplacer le cadrage. L’étoile mémorise ou rappelle une orientation sur les caméras qui renvoient leur position motorisée. **Revenir au direct** attend une image clé récente pour rattraper le retard estimé. B6ing peut rouvrir le flux si nécessaire, hors enregistrement local.
+
+Dans **Alertes**, le journal conserve les 200 derniers mouvements reçus par B6ing et affiche les miniatures disponibles dans AJCloud. À l’ouverture des alertes, le lecteur charge le clip le plus récent au-dessus de la liste et le laisse en pause. **▶** lance la lecture. L’icône de téléchargement enregistre la vidéo dans le dossier choisi dans **Réglages**. Tu peux effacer une alerte ou vider le journal avec **Tout effacer**.
+
+Dans **MicroSD**, les pastilles bleues indiquent les jours contenant des enregistrements. Sélectionne une caméra et une date, puis clique sur **Voir les clips du jour**. Les bandes de la frise ouvrent les clips correspondants dans le lecteur intégré. B6ing génère les miniatures des clips visibles à partir des images enregistrées sur la carte. La disponibilité de la lecture et des commandes dépend du modèle et de la connexion de la caméra.
 
 ## Développement
 
