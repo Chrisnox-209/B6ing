@@ -40,7 +40,7 @@ sudo apt install git python3-gi python3-venv gir1.2-gtk-4.0 gir1.2-adw-1 \
   gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
   gstreamer1.0-plugins-bad gstreamer1.0-libav
 
-git clone git@github.com:Chrisnox-209/B6ing.git
+git clone https://github.com/Chrisnox-209/B6ing.git
 cd B6ing
 /usr/bin/python3 -m venv --system-site-packages .venv
 .venv/bin/python -m pip install -r requirements-cinnado.txt
@@ -57,7 +57,7 @@ Ouvre **B6ing** depuis le menu Applications ou lance `.venv/bin/python -m cinnad
 
 Dans **Caméras**, clique sur **Modifier la grille**. Glisse les vignettes avec la poignée ou utilise les flèches. **Agrandir** donne toute la largeur à une caméra. L’icône de sauvegarde mémorise la disposition sous un nom. Clique sur ce nom pour la retrouver.
 
-Pendant le direct, utilise **−** et **+** pour zoomer jusqu’à 4×, puis glisse dans l’image pour déplacer le cadrage. L’étoile mémorise ou rappelle une orientation sur les caméras qui renvoient leur position motorisée. **Revenir au direct** attend une image clé récente pour rattraper le retard estimé. B6ing peut rouvrir le flux si nécessaire, hors enregistrement local.
+L’engrenage ouvre les réglages directement sous les commandes de la vignette. Pendant le direct, utilise **−** et **+** pour zoomer jusqu’à 4×, puis glisse dans l’image pour déplacer le cadrage. Sur les caméras compatibles, tu peux mémoriser jusqu’à quatre positions. Les numéros rappellent les positions Wansview Cloud et la maison rappelle le premier emplacement enregistré. **Revenir au direct** attend une image clé récente pour rattraper le retard estimé. B6ing peut rouvrir le flux si nécessaire, hors enregistrement local.
 
 Dans **Alertes**, le journal conserve les 200 derniers mouvements reçus par B6ing et affiche les miniatures disponibles dans AJCloud. À l’ouverture des alertes, le lecteur charge le clip le plus récent au-dessus de la liste et le laisse en pause. **▶** lance la lecture. L’icône de téléchargement enregistre la vidéo dans le dossier choisi dans **Réglages**. Tu peux effacer une alerte ou vider le journal avec **Tout effacer**.
 
