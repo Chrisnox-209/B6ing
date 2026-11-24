@@ -1,12 +1,12 @@
 """GTK settings for local media and camera names."""
 
+from dataclasses import replace
 from pathlib import Path
 
 from gi.repository import Adw, Gio, GLib, Gtk
 
 from . import __version__
 from .desktop import APP_NAME, autostart_enabled
-from .preferences import Preferences
 
 
 class FolderRow(Adw.ActionRow):
@@ -119,9 +119,9 @@ class SettingsDialog(Adw.Dialog):
             else:
                 names.pop(identifier, None)
         try:
-            preferences = Preferences(recording_folder=self.video_folder.folder, camera_names=names,
-                                      photo_folder=self.photo_folder.folder,
-                                      motion_notifications=self.motion_notifications.get_active())
+            preferences = replace(self.preferences, recording_folder=self.video_folder.folder, camera_names=names,
+                                  photo_folder=self.photo_folder.folder,
+                                  motion_notifications=self.motion_notifications.get_active())
             self.save(preferences, autostart=self.autostart.get_active())
         except (OSError, UnicodeError):
             self.toasts.add_toast(Adw.Toast.new('Impossible de sauvegarder les réglages.'))

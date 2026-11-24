@@ -37,6 +37,27 @@
     background: @card_bg_color;
     border: 1px solid alpha(@window_fg_color, .09);
 }
+calendar.sd-calendar > grid > label.day-number:checked {
+    background-image: radial-gradient(circle at center, @b6_cyan 44%, @b6_ink 53%, @b6_ink 58%, transparent 70%);
+    background-size: 9px 9px;
+    background-position: 90% 86%;
+    background-repeat: no-repeat;
+}
+calendar.sd-calendar > grid > label.day-number:checked:not(:selected) {
+    background-color: transparent;
+}
+.sd-timeline-card {
+    padding: 5px 10px 9px;
+    border-radius: 12px;
+    background: @card_bg_color;
+    border: 1px solid alpha(@window_fg_color, .09);
+}
+.sd-clip-selected { background: alpha(@b6_cyan, .14); }
+.camera-grid-toolbar { padding: 12px 18px 0; }
+.camera-view-button { border-radius: 9px; }
+.camera-view-button.active-view { background: alpha(@b6_cyan, .22); }
+.camera-layout-controls { padding: 4px; border-radius: 10px; background: alpha(@b6_cyan, .09); }
+.camera-drag-handle { padding: 0 6px; color: @b6_cyan; }
 
 .media-strip {
     padding: 4px;

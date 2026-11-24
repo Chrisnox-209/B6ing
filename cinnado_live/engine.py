@@ -10,12 +10,15 @@ import json
 from pathlib import Path
 import re
 import socket
+from time import monotonic
 from urllib.parse import urlsplit
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import aiohttp
 
 from .vendor_r2.cloud import Client
-from .vendor_r2.session import CameraAuthenticationError, RelayTimeout, run_session
+from .vendor_r2 import sd
+from .vendor_r2.session import CameraAuthenticationError, RelayTimeout, SessionRequest, run_session
 
 MOTION_POLL_SECONDS = 20
 MAX_ALERT_CLIP_BYTES = 32 * 1024 * 1024
@@ -308,6 +311,121 @@ class Account:
         except (aiohttp.ClientError, TimeoutError, AttributeError, ValueError, TypeError, RuntimeError) as exc:
             raise CameraError('Impossible de lire les commandes de cette caméra. Réessaie dans un instant.') from exc
 
+    async def _open_sd(self, camera):
+        client = self._client_for(camera)
+        config = camera.connection_config
+        try:
+            info = await self._camera_info(client, camera, _endpoint(config.get('appGatewayUrl')))
+            if _record(info.get('capability')).get('tfPlaybackType') != 'priv2':
+                raise CameraError('Cette caméra n’annonce pas le mode de lecture microSD pris en charge.')
+            card_status = _measure(_record(info.get('tfcardConfig')).get('status'), 0, 255)
+            if card_status is not None and card_status != 2:
+                raise CameraError('La caméra ne signale pas de carte microSD prête à la lecture.')
+            key = _record(info.get('base')).get('accessKey')
+            if not isinstance(key, str) or not 1 <= len(key.encode()) <= 256:
+                raise CameraError('AJCloud ne fournit pas l’accès à cette caméra.')
+            zone_name = _record(info.get('timeConfig')).get('tzName')
+            try:
+                tz = ZoneInfo(zone_name or 'Europe/Paris')
+            except (TypeError, ValueError, ZoneInfoNotFoundError):
+                tz = ZoneInfo('Europe/Paris')
+            await client.post('/v1/wakeup', {
+                'deviceId': camera.identifier, 'timeZone': tz.key,
+                'deviceMode': camera.data['deviceMode'], 'vendorCode': camera.data['vendorCode'],
+            }, signed=True, base=_endpoint(config.get('appKeepAliveUrl')), device_id=camera.identifier)
+        except CameraError:
+            raise
+        except (aiohttp.ClientError, TimeoutError, KeyError, ValueError, TypeError, RuntimeError) as exc:
+            raise CameraError('Impossible de préparer la lecture microSD de cette caméra.') from exc
+        return key, tz
+
+    async def read_sd_calendar(self, camera):
+        key, _ = await self._open_sd(camera)
+        request = SessionRequest(sd.CALENDAR)
+        days = await self._read_sd(camera, key, request, sd.parse_calendar)
+        if days:
+            return days
+        await asyncio.sleep(.75)
+        return await self._read_sd(camera, key, request, sd.parse_calendar)
+
+    async def read_sd_clips(self, camera, day):
+        key, tz = await self._open_sd(camera)
+        request = sd.list_request(day, tz)
+        for attempt in range(2):
+            try:
+                clips = await self._read_sd(camera, key, request, lambda payload: sd.parse_clips(payload, day))
+            except sd.CardListUnavailable as exc:
+                if attempt:
+                    raise CameraError(f'Lecture microSD indisponible pour le {day:%d/%m/%Y}. '
+                                      'La caméra a répondu sans fournir la liste des clips.') from exc
+                await asyncio.sleep(.75)
+            else:
+                return clips, tz
+
+    @staticmethod
+    async def _read_sd(camera, key, request, parse):
+        try:
+            return parse(await sd.read_reply(camera.identifier, key, request))
+        except RelayTimeout as exc:
+            raise CameraError('La caméra n’a pas répondu à la demande microSD. Réessaie dans un instant.') from exc
+        except CameraAuthenticationError as exc:
+            raise CameraError('La caméra a refusé la connexion microSD.') from exc
+        except (sd.InvalidCardResponse, RuntimeError, OSError) as exc:
+            raise CameraError('La réponse de lecture microSD est indisponible ou incompatible.') from exc
+
+    async def read_sd_thumbnails(self, camera, clips, notify):
+        key, _ = await self._open_sd(camera)
+        for clip in clips:
+            stop = asyncio.Event()
+            frames = []
+            encoding = None
+            size = 0
+
+            async def receive(raw, codec, fps):
+                nonlocal encoding, size
+                encoding = codec, fps
+                size += len(raw)
+                if size <= 4 * 1024 * 1024:
+                    frames.append(raw)
+                if len(frames) >= 6 or size > 4 * 1024 * 1024:
+                    stop.set()
+
+            try:
+                await asyncio.wait_for(self._play_sd_clip(camera, key, clip, receive, stop), 14)
+            except (CameraError, TimeoutError):
+                pass
+            await notify(clip, frames, encoding)
+
+    async def play_sd_clip(self, camera, clip, on_frame, stop):
+        key, _ = await self._open_sd(camera)
+        await self._play_sd_clip(camera, key, clip, on_frame, stop)
+
+    @staticmethod
+    async def _play_sd_clip(camera, key, clip, on_frame, stop):
+        stats = {}
+
+        async def control(command, payload):
+            if command in (sd.PLAY + 1, sd.STOP + 1) and sd.is_playback_reply(payload, clip):
+                if command == sd.PLAY + 1 and payload[0] != 0:
+                    raise CameraError('La caméra a refusé de lire ce clip microSD.')
+                if command == sd.STOP + 1:
+                    stop.set()
+
+        try:
+            await run_session(camera.identifier, key, on_frame, stop, monotonic() + max(50, clip.duration + 40),
+                              stats, request=sd.playback_request(clip), on_control=control)
+        except RelayTimeout as exc:
+            if not stats.get('frames'):
+                raise CameraError('La caméra n’a envoyé aucune image pour ce clip microSD.') from exc
+            if stats.get('media_seconds', 0) + 2 < clip.duration:
+                raise CameraError('Le flux du clip microSD s’est interrompu.') from exc
+        except CameraError:
+            raise
+        except (CameraAuthenticationError, OSError, RuntimeError) as exc:
+            raise CameraError('Impossible de lire ce clip microSD.') from exc
+        if not stats.get('frames'):
+            raise CameraError('La caméra n’a envoyé aucune image pour ce clip microSD.')
+
     async def _motion_access_key(self, client: Client, camera: Camera, gateway: str) -> str:
         info = await self._camera_info(client, camera, gateway)
         access_key = _record(info.get('base')).get('accessKey')
@@ -467,13 +585,13 @@ class Account:
 
     async def play(
         self, camera: Camera, stop: asyncio.Event,
-        frame: Callable[[bytes, str, int, int], Awaitable[None]], status: Callable[[str], None],
+        frame: Callable[[bytes, str, int, int, int | None], Awaitable[None]], status: Callable[[str], None],
         *, direction: Callable[[int], str | None] | None = None,
         ptz_available: Callable[[bool], None] | None = None,
         quality: Callable[[], int | None] | None = None,
         listening: Callable[[], bool] | None = None,
         audio: Callable[[bytes, int], Awaitable[None]] | None = None,
-        requested_talk=None,
+        requested_talk=None, reconnect=None, position_requests=None,
     ) -> None:
         client = self._client_for(camera)
         config = camera.connection_config
@@ -505,13 +623,18 @@ class Account:
         failed_attempts = 0
         received_frame = False
         last_failure = ''
+        camera_clock = None
+
+        def read_clock(source_ms):
+            nonlocal camera_clock
+            camera_clock = source_ms
 
         async def receive(data: bytes, codec: str, fps: int) -> None:
             nonlocal received_frame
             if not received_frame:
                 received_frame = True
                 status('Flux reçu · décodage…')
-            await frame(data, codec, fps, epoch)
+            await frame(data, codec, fps, epoch, camera_clock)
 
         def desired_direction():
             return direction(epoch)
@@ -523,6 +646,7 @@ class Account:
         while not stop.is_set():
             epoch += 1
             received_frame = False
+            camera_clock = None
             stats = {}
             try:
                 if epoch == 1:
@@ -541,7 +665,8 @@ class Account:
                     await run_session(camera.identifier, key, receive, stop, float('inf'), stats,
                                       direction=desired_direction if motorized and direction is not None else None,
                                       quality=quality, listening=listening, on_audio=receive_audio if audio else None,
-                                      requested_talk=requested_talk)
+                                      requested_talk=requested_talk, on_video_clock=read_clock, reconnect=reconnect,
+                                      position_requests=position_requests if motorized else None)
                 except CameraAuthenticationError as exc:
                     raise CameraError('La B6 a refusé l’authentification vidéo.') from exc
                 except RelayTimeout:
@@ -552,6 +677,11 @@ class Account:
                     raise CameraError('Réponse vidéo incompatible avec le protocole R2.') from exc
                 if stop.is_set():
                     return
+                if reconnect is not None and reconnect.is_set():
+                    reconnect.clear()
+                    failed_attempts = 0
+                    status('Rattrapage du direct · reconnexion…')
+                    continue
                 if received_frame:
                     message = 'Le relais n’envoie plus de vidéo.'
                 elif stats.get('transport_error'):

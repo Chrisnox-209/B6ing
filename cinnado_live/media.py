@@ -22,8 +22,9 @@ def has_keyframe(data, codec):
     return False
 
 
-def snapshot(picture):
-    paintable = picture.get_paintable()
+def snapshot(picture, *, paintable=None):
+    if paintable is None:
+        paintable = picture.get_paintable()
     if paintable is None:
         return None
     width = paintable.get_intrinsic_width()
@@ -34,6 +35,33 @@ def snapshot(picture):
     paintable.snapshot(drawing, width, height)
     node = drawing.to_node()
     return picture.get_native().get_renderer().render_texture(node, None) if node is not None else None
+
+
+def clip_thumbnail(frames, encoding):
+    if not frames or encoding is None:
+        return None
+    codec, fps = encoding
+    kind = {'h264': 'h264', 'hevc': 'h265'}[codec]
+    pipeline = Gst.parse_launch(
+        f'appsrc name=input format=time caps="video/x-{kind},stream-format=byte-stream,alignment=au,'
+        f'framerate={max(1, min(60, fps))}/1" ! {kind}parse ! avdec_{kind} max-threads=1 '
+        '! videoconvert ! videoscale ! video/x-raw,width=224,height=126,pixel-aspect-ratio=1/1 '
+        '! jpegenc quality=82 ! appsink name=output sync=false max-buffers=1 drop=true'
+    )
+    try:
+        if pipeline.set_state(Gst.State.PLAYING) == Gst.StateChangeReturn.FAILURE:
+            return None
+        source = pipeline.get_by_name('input')
+        for raw in frames:
+            source.emit('push-buffer', Gst.Buffer.new_wrapped(raw))
+        source.emit('end-of-stream')
+        sample = pipeline.get_by_name('output').emit('try-pull-sample', 2 * Gst.SECOND)
+        if sample is not None:
+            buffer = sample.get_buffer()
+            return buffer.extract_dup(0, buffer.get_size())
+    finally:
+        pipeline.set_state(Gst.State.NULL)
+    return None
 
 
 def publish_media_file(temporary: Path, base: Path) -> Path:
