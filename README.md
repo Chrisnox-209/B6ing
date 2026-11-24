@@ -36,7 +36,21 @@ Les captures montrent B6ing 0.3.1 avec des images et des données de démonstrat
 
 ## Installation sur Ubuntu
 
-Environnement testé sur **Ubuntu 26.04 avec GNOME**. Le direct utilise GStreamer. Le trousseau de session sert à mémoriser le compte.
+### Paquet `.deb`
+
+Télécharge [b6ing_0.4.0_all.deb](https://github.com/Chrisnox-209/B6ing/releases/download/v0.4.0/b6ing_0.4.0_all.deb) pour **Ubuntu 26.04 LTS**. Dans le dossier de téléchargement, installe le paquet avec APT pour récupérer aussi ses dépendances.
+
+```sh
+sudo apt install ./b6ing_0.4.0_all.deb
+```
+
+Ouvre **B6ing** dans le menu Applications ou lance `b6ing` dans un terminal. La version installée est indiquée dans **Réglages** et par `b6ing --version`. Pour mettre à jour le paquet, installe le nouveau fichier `.deb` de la même façon.
+
+Si tu avais installé B6ing depuis les sources, quitte l’ancienne instance et lance `b6ing` depuis le terminal. L’ancien raccourci dans `~/.local/share/applications/io.github.wansviewubuntu.B6ing.desktop` peut passer en priorité sur celui du paquet. Renomme-le en ajoutant `.bak` pour utiliser le raccourci installé par APT. Si le démarrage réduit était activé, désactive-le puis réactive-le dans **Réglages** pour actualiser son lanceur. Les deux installations utilisent les mêmes réglages et le même trousseau de session.
+
+### Depuis les sources
+
+Cette méthode permet de travailler depuis un clone. Le direct utilise GStreamer et la mémorisation du compte utilise le trousseau de session.
 
 ```sh
 sudo apt install git python3-gi python3-venv gir1.2-gtk-4.0 gir1.2-adw-1 \
@@ -72,5 +86,7 @@ Dans **MicroSD**, les pastilles bleues indiquent les jours contenant des enregis
 ```sh
 .venv/bin/python -m unittest discover -s tests -v
 ```
+
+Pour construire le paquet localement, lance `python3 packaging/deb/build.py` depuis le dépôt. Le fichier `.deb` est créé dans `dist/`. La construction utilise `dpkg-deb` et le numéro de version affiché dans l’application.
 
 B6ing est un projet indépendant. Le module de connexion embarqué dérive de [papou-github/wansview-r2](https://github.com/papou-github/wansview-r2). Les détails de l’intégration et sa licence MIT figurent dans [UPSTREAM.md](cinnado_live/vendor_r2/UPSTREAM.md) et [LICENSE](cinnado_live/vendor_r2/LICENSE).
