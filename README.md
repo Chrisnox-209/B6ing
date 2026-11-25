@@ -8,11 +8,11 @@ B6ing est une application de bureau pour voir et piloter des caméras solaires *
 
 ## Aperçu
 
-Les captures montrent B6ing 0.3.1 avec des images et des données de démonstration.
+Les captures utilisent des images et des données de démonstration. La vue **Caméras** montre B6ing 0.5.0.
 
 ### Caméras
 
-![Grille de trois caméras avec le panneau de réglages déplié sous le direct Jardin. Le zoom, les positions favorites et le retour au direct sont visibles.](docs/captures/cameras.png)
+![Grille de B6ing avec la configuration dépliée sous le direct Jardin. Le bouton de veille, le curseur de sensibilité et le bouton Appliquer sont visibles.](docs/captures/cameras.png)
 
 ### Alertes
 
@@ -26,6 +26,7 @@ Les captures montrent B6ing 0.3.1 avec des images et des données de démonstrat
 
 - **Direct** en grille personnalisable ou en plein écran, vues mémorisées, profils Haute et Éco, retard estimé et bouton de retour au direct.
 - **Commandes** sur chaque vignette et en plein écran. Oriente la caméra au joystick ou avec les flèches du clavier. Pilote la lumière, la sirène et la vision jour/nuit.
+- **Configuration par caméra** avec mise en veille, réveil et cinq niveaux de sensibilité aux mouvements pour les modèles compatibles.
 - **Cadrage** avec zoom numérique jusqu’à 4× et positions favorites sur les caméras compatibles.
 - **Audio** pour écouter la caméra et parler en maintenant le bouton microphone.
 - **Captures et enregistrements** en PNG et MKV, avec deux dossiers configurables. Les noms de fichiers reprennent le nom de la caméra et l’heure de début, avec la date.
@@ -38,10 +39,10 @@ Les captures montrent B6ing 0.3.1 avec des images et des données de démonstrat
 
 ### Paquet `.deb`
 
-Télécharge [b6ing_0.4.0_all.deb](https://github.com/Chrisnox-209/B6ing/releases/download/v0.4.0/b6ing_0.4.0_all.deb) pour **Ubuntu 26.04 LTS**. Dans le dossier de téléchargement, installe le paquet avec APT pour récupérer aussi ses dépendances.
+Télécharge [b6ing_0.5.0_all.deb](https://github.com/Chrisnox-209/B6ing/releases/download/v0.5.0/b6ing_0.5.0_all.deb) pour **Ubuntu 26.04 LTS**. Dans le dossier de téléchargement, installe le paquet avec APT pour récupérer aussi ses dépendances.
 
 ```sh
-sudo apt install ./b6ing_0.4.0_all.deb
+sudo apt install ./b6ing_0.5.0_all.deb
 ```
 
 Ouvre **B6ing** dans le menu Applications ou lance `b6ing` dans un terminal. La version installée est indiquée dans **Réglages** et par `b6ing --version`. Pour mettre à jour le paquet, installe le nouveau fichier `.deb` de la même façon.
@@ -75,7 +76,9 @@ Ouvre **B6ing** depuis le menu Applications ou lance `.venv/bin/python -m cinnad
 
 Dans **Caméras**, clique sur **Modifier la grille**. Glisse les vignettes avec la poignée ou utilise les flèches. **Agrandir** donne toute la largeur à une caméra. L’icône de sauvegarde mémorise la disposition sous un nom. Clique sur ce nom pour la retrouver.
 
-L’engrenage ouvre les réglages directement sous les commandes de la vignette. Pendant le direct, utilise **−** et **+** pour zoomer jusqu’à 4×, puis glisse dans l’image pour déplacer le cadrage. Sur les caméras compatibles, tu peux mémoriser jusqu’à quatre positions. Les numéros rappellent les positions Wansview Cloud et la maison rappelle le premier emplacement enregistré. **Revenir au direct** attend une image clé récente pour rattraper le retard estimé. B6ing peut rouvrir le flux si nécessaire, hors enregistrement local.
+L’engrenage déplie les réglages sous les commandes de la vignette. Dans **Configuration de la caméra**, utilise le bouton **⏻** pour mettre la caméra en veille ou la réveiller. Pour ajuster la **Sensibilité aux mouvements**, choisis un niveau de **Faible** à **Élevée** et clique sur **Appliquer**. B6ing relit le réglage Wansview pour confirmer l’enregistrement.
+
+Pendant le direct, utilise **−** et **+** pour zoomer jusqu’à 4×, puis glisse dans l’image pour déplacer le cadrage. Sur les caméras compatibles, tu peux mémoriser jusqu’à quatre positions. Les numéros rappellent les positions Wansview Cloud et la maison rappelle le premier emplacement enregistré. **Revenir au direct** attend une image clé récente pour rattraper le retard estimé. B6ing peut rouvrir le flux si nécessaire, hors enregistrement local.
 
 Dans **Alertes**, le journal conserve les 200 derniers mouvements reçus par B6ing et affiche les miniatures disponibles dans AJCloud. À l’ouverture des alertes, le lecteur charge le clip le plus récent au-dessus de la liste et le laisse en pause. **▶** lance la lecture. L’icône de téléchargement enregistre la vidéo dans le dossier choisi dans **Réglages**. Tu peux effacer une alerte ou vider le journal avec **Tout effacer**.
 
