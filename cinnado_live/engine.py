@@ -185,6 +185,8 @@ class CameraOptions:
     battery: BatteryReading | None = None
     wifi: WifiReading | None = None
     favorite_slots: tuple[int, ...] | None = None
+    hibernating: bool | None = None
+    motion_sensitivity: int | None = None
 
     @classmethod
     def from_info(cls, info: dict) -> CameraOptions:
@@ -199,6 +201,8 @@ class CameraOptions:
             battery=BatteryReading.from_info(info),
             wifi=WifiReading.from_info(info),
             favorite_slots=_favorite_slots(info, capabilities),
+            hibernating=_hibernation_state(info, _hibernation_mode(capabilities)),
+            motion_sensitivity=_measure(_record(info.get('motionDetectConfig')).get('susceptiveness'), 1, 5),
         )
 
 
@@ -226,6 +230,32 @@ def _record(value) -> dict:
         except ValueError:
             return {}
     return value if isinstance(value, dict) else {}
+
+
+def _hibernation_mode(capabilities):
+    if (capabilities.get('privateBase') in (1, '1')
+            or capabilities.get('privateTimedHibernate') in (1, 2, '1', '2')):
+        return 'privacy'
+    return 'legacy' if capabilities.get('hibernate') in (1, '1') else None
+
+
+def _hibernation_state(info, mode):
+    if mode == 'privacy':
+        config = _record(info.get('autoHibernateConfig'))
+        enabled = _measure(config.get('enable'), 0, 1)
+        if enabled == 0:
+            return False
+        policies = config.get('timePolicies')
+        if enabled == 1 and isinstance(policies, list) and any(
+            str(policy.get('no')) == '1' and _measure(policy.get('enable'), 0, 1) == 1
+            for policy in map(_record, policies)
+        ):
+            return True
+    if mode is not None:
+        state = _measure(_record(info.get('hibernateConfig')).get('enable'), 0, 1)
+        if state is not None:
+            return bool(state)
+    return None
 
 
 def _endpoint(value) -> str:
@@ -310,8 +340,11 @@ class Account:
 
     @staticmethod
     async def _camera_info(client: Client, camera: Camera, gateway: str) -> dict:
+        device = {'did': camera.identifier, 'scopes': [], 'isShare': False}
+        if (device_type := _measure(camera.data.get('deviceType'), 0, 255)) is not None:
+            device['deviceType'] = device_type
         response = await client.post('/v1/fetch-infos', {
-            'devices': [{'did': camera.identifier, 'scopes': [], 'isShare': False}],
+            'devices': [device],
         }, signed=True, base=gateway)
         infos = response.get('infos')
         if not isinstance(infos, list) or len(infos) != 1:
@@ -330,6 +363,16 @@ class Account:
             raise
         except (aiohttp.ClientError, TimeoutError, AttributeError, ValueError, TypeError, RuntimeError) as exc:
             raise CameraError('Impossible de lire les commandes de cette caméra. Réessaie dans un instant.') from exc
+
+    async def _wait_camera_options(self, camera, matches):
+        async with asyncio.timeout(8):
+            for delay in (0, .5, 1, 2):
+                if delay:
+                    await asyncio.sleep(delay)
+                options = await self.read_camera_options(camera)
+                if matches(options):
+                    return options
+        return None
 
     async def _open_sd(self, camera):
         client = self._client_for(camera)
@@ -602,6 +645,70 @@ class Account:
             await client.post(route, data, signed=True, base=gateway, device_id=camera.identifier)
         except (aiohttp.ClientError, TimeoutError, AttributeError, ValueError, TypeError, RuntimeError) as exc:
             raise CameraError('La commande n’a pas été confirmée. Vérifie que la caméra répond et réessaie.') from exc
+
+    async def set_hibernation(self, camera: Camera, enabled: bool) -> CameraOptions:
+        client = self._client_for(camera)
+        gateway = _endpoint(camera.connection_config.get('appGatewayUrl'))
+        try:
+            info = await self._camera_info(client, camera, gateway)
+            mode = _hibernation_mode(_record(info.get('capability')))
+            options = CameraOptions.from_info(info)
+            if options.hibernating is None:
+                raise CameraError('Wansview ne fournit pas l’état de veille de cette caméra.')
+            if options.hibernating is enabled:
+                return options
+
+            if mode == 'privacy':
+                policies = _record(info.get('autoHibernateConfig')).get('timePolicies')
+                if (not isinstance(policies, list) or not all(isinstance(policy, dict) for policy in policies)
+                        or sum(str(policy.get('no')) == '1' for policy in policies) != 1):
+                    raise CameraError('Wansview ne fournit pas les règles de veille de cette caméra.')
+                # Wansview reserves policy 1 for one-tap, all-day hibernation.
+                if enabled:
+                    policies = [{**policy, 'enable': int(str(policy.get('no')) == '1')} for policy in policies]
+                route = '/v1/auto-hibernate-config'
+                data = {'enable': str(int(enabled)), 'timePolicies': policies}
+            else:
+                route = '/v1/hibernate-config'
+                data = {'enable': int(enabled)}
+            await client.post(route, data, signed=True, base=gateway, device_id=camera.identifier)
+            options = await self._wait_camera_options(camera, lambda options: options.hibernating is enabled)
+            if options is not None:
+                return options
+        except CameraError:
+            raise
+        except (aiohttp.ClientError, TimeoutError, AttributeError, ValueError, TypeError, RuntimeError) as exc:
+            raise CameraError('Wansview n’a pas confirmé le changement de veille. Réessaie dans un instant.') from exc
+        raise CameraError('Wansview n’a pas confirmé le changement de veille. Réessaie dans un instant.')
+
+    async def set_motion_sensitivity(self, camera: Camera, value: int) -> CameraOptions:
+        if type(value) is not int or not 1 <= value <= 5:
+            raise CameraError('Choisis un niveau de sensibilité entre 1 et 5.')
+        client = self._client_for(camera)
+        gateway = _endpoint(camera.connection_config.get('appGatewayUrl'))
+        try:
+            info = await self._camera_info(client, camera, gateway)
+            options = CameraOptions.from_info(info)
+            if options.motion_sensitivity is None:
+                raise CameraError('Wansview ne fournit pas la sensibilité de cette caméra.')
+            if options.motion_sensitivity == value:
+                return options
+            config = _record(info.get('motionDetectConfig'))
+            data = {key: str(config[key]) for key in (
+                'pirDetectRange', 'pirLingerDuration', 'retriggerInterval', 'aovWorkInterval', 'aovWorkMinBattery',
+            ) if type(config.get(key)) in (str, int)}
+            # The mobile app uses the custom profile for a manually adjusted sensitivity.
+            data.update(level='Custom', susceptiveness=str(value))
+            await client.post('/v1/motion-detect-config', data, signed=True, base=gateway,
+                              device_id=camera.identifier)
+            options = await self._wait_camera_options(camera, lambda options: options.motion_sensitivity == value)
+            if options is not None:
+                return options
+        except CameraError:
+            raise
+        except (aiohttp.ClientError, TimeoutError, AttributeError, ValueError, TypeError, RuntimeError) as exc:
+            raise CameraError('Wansview n’a pas confirmé le niveau de sensibilité.') from exc
+        raise CameraError('Wansview n’a pas confirmé le niveau de sensibilité.')
 
     async def change_favorite(self, camera, action, slot=None):
         client = self._client_for(camera)

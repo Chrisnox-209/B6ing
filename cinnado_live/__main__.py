@@ -24,7 +24,7 @@ from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gst, Gtk, Pango
 
 from .alerts import AlertEntry, AlertJournal
 from .alerts_view import AlertsView
-from .camera_controls import CameraControls, FavoriteSettings, FavoriteShortcuts
+from .camera_controls import CameraConfiguration, CameraControls, FavoriteSettings, FavoriteShortcuts
 from .camera_grid import CameraGrid, icon_button
 from .desktop import (
     APP_ICON_NAME, APP_ID, APP_LAUNCHER_ICON, APP_NAME, ICON_SEARCH_PATH, autostart_enabled, set_autostart,
@@ -337,7 +337,9 @@ class CameraTile(Gtk.Box):
         self.live_tools.set_sensitive(False)
         self.controls = CameraControls(self.change_camera_option)
         self.favorite_settings = self.make_favorite_settings()
+        self.configuration = CameraConfiguration(self.toggle_camera_power, self.change_motion_sensitivity)
         settings = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, css_classes=['tile-camera-settings'])
+        settings.append(self.configuration)
         settings.append(self.live_tools)
         quality = Gtk.Box(spacing=8)
         quality.append(Gtk.Label(label='Qualité du direct', xalign=0, hexpand=True))
@@ -494,7 +496,7 @@ class CameraTile(Gtk.Box):
         except (CameraError, CancelledError):
             options = None
         if options is not None and self.controls_task is None:
-            self.camera_options = options
+            self.apply_camera_options(options)
             self.refresh_controls()
         self.update_camera_indicators(options)
         return False
@@ -632,9 +634,13 @@ class CameraTile(Gtk.Box):
 
     def refresh_controls(self):
         busy = self.controls_task is not None
+        power = self.camera_options.hibernating if self.camera_options is not None else None
+        sleeping = power is True
+        self.configuration.refresh(self.camera_options, busy)
+        self.button.set_sensitive(not sleeping and (not busy or self.task is not None))
         for controls in (self.controls, self.fullscreen_controls):
             if controls is not None:
-                controls.refresh(self.camera_options, busy)
+                controls.refresh(self.camera_options, busy or sleeping)
         slots = self.camera_options.favorite_slots if self.camera_options is not None else None
         for shortcuts in (self.favorites, self.fullscreen_favorites):
             if shortcuts is not None:
@@ -645,6 +651,34 @@ class CameraTile(Gtk.Box):
 
     def load_camera_options(self):
         self.run_camera_control(self.worker.account.read_camera_options(self.camera))
+
+    def apply_camera_options(self, options):
+        previous = self.camera_options.hibernating if self.camera_options is not None else None
+        if options.hibernating is None and previous is not None:
+            options = replace(options, hibernating=previous)
+        self.camera_options = options
+        if options.hibernating:
+            if self.task is not None:
+                self.reset('En veille')
+            else:
+                self.status.set_label('En veille')
+        elif previous:
+            self.status.set_label('Prête · diffusion à la demande')
+
+    def toggle_camera_power(self, *_):
+        if self.controls_task is not None or self.camera_options is None:
+            return
+        sleeping = self.camera_options.hibernating
+        if sleeping is not None:
+            self.run_camera_control(
+                self.worker.account.set_hibernation(self.camera, not sleeping),
+                message='Veille désactivée.' if sleeping else 'Veille activée.',
+            )
+
+    def change_motion_sensitivity(self, value):
+        if self.controls_task is None:
+            self.run_camera_control(self.worker.account.set_motion_sensitivity(self.camera, value),
+                                    message='Sensibilité enregistrée sur la caméra.')
 
     def change_camera_option(self, option, value):
         if self.controls_task is not None:
@@ -673,10 +707,12 @@ class CameraTile(Gtk.Box):
             lambda future: GLib.idle_add(self.finish_camera_controls, future, message))
 
     def finish_camera_controls(self, future, message):
+        if future is not self.controls_task:
+            return False
         self.controls_task = None
         had_options = self.camera_options is not None
         try:
-            self.camera_options = future.result()
+            options = future.result()
         except CancelledError:
             pass
         except CameraError as exc:
@@ -686,6 +722,7 @@ class CameraTile(Gtk.Box):
             if message is not None:
                 self.notify('La caméra n’a pas confirmé la commande.')
         else:
+            self.apply_camera_options(options)
             if not had_options or message is None:
                 self.update_camera_indicators(self.camera_options)
             if message is not None:
@@ -718,6 +755,8 @@ class CameraTile(Gtk.Box):
     def toggle(self, *_):
         if self.task is not None:
             self.reset('Direct arrêté.')
+            return
+        if not self.button.get_sensitive():
             return
         generation = self.generation = object()
         queue = self.frames = Queue(maxsize=48)
@@ -1679,6 +1718,9 @@ class Window(Adw.ApplicationWindow):
             self.camera_status_timer = None
         self.select_camera(None)
         for tile in self.tiles:
+            if tile.controls_task is not None:
+                tile.controls_task.cancel()
+                tile.controls_task = None
             if tile.camera_status_task is not None:
                 tile.camera_status_task.cancel()
                 tile.camera_status_task = None

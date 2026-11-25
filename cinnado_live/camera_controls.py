@@ -1,9 +1,81 @@
-"""Direct controls for the B6 light, siren, and night vision."""
+"""Per-camera configuration and direct controls."""
 
-from gi.repository import Gtk
+from gi.repository import Adw, Gtk
 
 from .camera_grid import icon_button
 from .engine import FAVORITE_SLOTS
+
+
+class CameraConfiguration(Gtk.Box):
+    SENSITIVITY = {1: 'Faible', 2: 'Plutôt faible', 3: 'Normale', 4: 'Plutôt élevée', 5: 'Élevée'}
+
+    def __init__(self, toggle_power, apply_sensitivity):
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=8, visible=False,
+                         css_classes=['camera-configuration'])
+        self.saved_sensitivity = None
+        header = Gtk.Box(spacing=8)
+        header.append(Gtk.Label(label='Configuration de la caméra', xalign=0, hexpand=True, wrap=True,
+                                css_classes=['heading']))
+        self.power_content = Adw.ButtonContent(icon_name='system-shutdown-symbolic')
+        self.power = Gtk.Button(child=self.power_content, css_classes=['control-icon'])
+        self.power.connect('clicked', toggle_power)
+        header.append(self.power)
+        self.append(header)
+
+        self.motion = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
+        title = Gtk.Box(spacing=6)
+        title.append(Gtk.Label(label='Sensibilité aux mouvements', xalign=0, hexpand=True, wrap=True))
+        self.level = Gtk.Label(css_classes=['dim-label'])
+        title.append(self.level)
+        self.motion.append(title)
+
+        row = Gtk.Box(spacing=8)
+        self.scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 1, 5, 1)
+        self.scale.set_hexpand(True)
+        self.scale.set_draw_value(False)
+        self.scale.set_round_digits(0)
+        self.scale.update_property([Gtk.AccessibleProperty.LABEL], ['Sensibilité aux mouvements'])
+        for level in self.SENSITIVITY:
+            self.scale.add_mark(level, Gtk.PositionType.BOTTOM, None)
+        self.scale.connect('value-changed', self.update_level)
+        row.append(self.scale)
+        self.apply = Gtk.Button(label='Appliquer', valign=Gtk.Align.CENTER, css_classes=['suggested-action'])
+        self.apply.connect('clicked', lambda *_: apply_sensitivity(int(self.scale.get_value())))
+        row.append(self.apply)
+        self.motion.append(row)
+        self.append(self.motion)
+
+    def refresh(self, options, busy):
+        power = options.hibernating if options is not None else None
+        level = options.motion_sensitivity if options is not None else None
+        self.set_visible(power is not None or level is not None)
+        self.power.set_visible(power is not None)
+        self.power.set_sensitive(not busy)
+        label, description = ('Réveiller', 'Réveiller la caméra') if power is True else (
+            'Mettre en veille', 'Mettre la caméra en veille',
+        )
+        self.power_content.set_label(label)
+        self.power.set_tooltip_text(description)
+        self.power.update_property([Gtk.AccessibleProperty.LABEL], [description])
+        if power is True:
+            self.power.add_css_class('wake-camera')
+        else:
+            self.power.remove_css_class('wake-camera')
+
+        self.motion.set_visible(level is not None)
+        self.scale.set_sensitive(not busy)
+        if level is not None and level != self.saved_sensitivity:
+            self.scale.set_value(level)
+        self.saved_sensitivity = level
+        self.update_level(self.scale)
+
+    def update_level(self, scale):
+        level = int(scale.get_value())
+        name = self.SENSITIVITY[level]
+        self.level.set_label(name)
+        scale.update_property([Gtk.AccessibleProperty.VALUE_TEXT], [name])
+        self.apply.set_sensitive(self.saved_sensitivity is not None and level != self.saved_sensitivity
+                                 and scale.get_sensitive())
 
 
 class CameraControls(Gtk.Box):
