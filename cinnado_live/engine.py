@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import aiohttp
 
-from .vendor_r2.cloud import Client
+from .vendor_r2.cloud import Client, CloudAuthenticationError
 from .vendor_r2 import sd
 from .vendor_r2.position_storage import upload_position_placeholder
 from .vendor_r2.session import CameraAuthenticationError, RelayTimeout, SessionRequest, run_session
@@ -328,7 +328,9 @@ class Account:
 
     async def close(self) -> None:
         self.cameras = ()
-        self._client = None
+        client, self._client = self._client, None
+        if client is not None:
+            client.clear_authentication()
         if self._session:
             session, self._session = self._session, None
             await session.close()
@@ -359,6 +361,8 @@ class Account:
         gateway = _endpoint(camera.connection_config.get('appGatewayUrl'))
         try:
             return CameraOptions.from_info(await self._camera_info(client, camera, gateway))
+        except CloudAuthenticationError as exc:
+            raise CameraError(str(exc)) from exc
         except CameraError:
             raise
         except (aiohttp.ClientError, TimeoutError, AttributeError, ValueError, TypeError, RuntimeError) as exc:
@@ -675,6 +679,8 @@ class Account:
             options = await self._wait_camera_options(camera, lambda options: options.hibernating is enabled)
             if options is not None:
                 return options
+        except CloudAuthenticationError as exc:
+            raise CameraError(str(exc)) from exc
         except CameraError:
             raise
         except (aiohttp.ClientError, TimeoutError, AttributeError, ValueError, TypeError, RuntimeError) as exc:
@@ -789,6 +795,8 @@ class Account:
                 'deviceId': camera.identifier, 'timeZone': 'Europe/Paris',
                 'deviceMode': camera.data['deviceMode'], 'vendorCode': camera.data['vendorCode'],
             }
+        except CloudAuthenticationError as exc:
+            raise CameraError(str(exc)) from exc
         except (aiohttp.ClientError, TimeoutError) as exc:
             raise CameraError('AJCloud ne répond pas pendant l’ouverture de la caméra.') from exc
         except CameraError:
@@ -828,6 +836,8 @@ class Account:
                 if epoch == 1:
                     status('Réveil de la caméra…')
                 await client.post('/v1/wakeup', wake_request, signed=True, base=wakeup, device_id=camera.identifier)
+            except CloudAuthenticationError as exc:
+                raise CameraError(str(exc)) from exc
             except (aiohttp.ClientError, TimeoutError):
                 message = 'AJCloud ne répond pas pendant le réveil de la caméra.'
             except (KeyError, ValueError, TypeError, RuntimeError) as exc:
