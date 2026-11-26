@@ -27,6 +27,7 @@ Les captures utilisent des images et des données de démonstration. La vue **Ca
 - **Direct** en grille personnalisable ou en plein écran, vues mémorisées, profils Haute et Éco, retard estimé et bouton de retour au direct.
 - **Commandes** sur chaque vignette et en plein écran. Oriente la caméra au joystick ou avec les flèches du clavier. Pilote la lumière, la sirène et la vision jour/nuit.
 - **Configuration par caméra** avec mise en veille, réveil et cinq niveaux de sensibilité aux mouvements pour les modèles compatibles.
+- **Renouvellement automatique de la connexion Wansview Cloud** pour continuer à réveiller les caméras et à ouvrir le direct après plusieurs heures.
 - **Cadrage** avec zoom numérique jusqu’à 4× et positions favorites sur les caméras compatibles.
 - **Audio** pour écouter la caméra et parler en maintenant le bouton microphone.
 - **Captures et enregistrements** en PNG et MKV, avec deux dossiers configurables. Les noms de fichiers reprennent le nom de la caméra et l’heure de début, avec la date.
@@ -39,10 +40,10 @@ Les captures utilisent des images et des données de démonstration. La vue **Ca
 
 ### Paquet `.deb`
 
-Télécharge [b6ing_0.5.0_all.deb](https://github.com/Chrisnox-209/B6ing/releases/download/v0.5.0/b6ing_0.5.0_all.deb) pour **Ubuntu 26.04 LTS**. Dans le dossier de téléchargement, installe le paquet avec APT pour récupérer aussi ses dépendances.
+Télécharge [b6ing_0.5.1_all.deb](https://github.com/Chrisnox-209/B6ing/releases/download/v0.5.1/b6ing_0.5.1_all.deb) pour **Ubuntu 26.04 LTS**. Dans le dossier de téléchargement, installe le paquet avec APT pour récupérer aussi ses dépendances.
 
 ```sh
-sudo apt install ./b6ing_0.5.0_all.deb
+sudo apt install ./b6ing_0.5.1_all.deb
 ```
 
 Ouvre **B6ing** dans le menu Applications ou lance `b6ing` dans un terminal. La version installée est indiquée dans **Réglages** et par `b6ing --version`. Pour mettre à jour le paquet, installe le nouveau fichier `.deb` de la même façon.
