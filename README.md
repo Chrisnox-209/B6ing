@@ -8,11 +8,15 @@ B6ing est une application de bureau pour voir et piloter des caméras solaires *
 
 ## Aperçu
 
-Les captures utilisent des images et des données de démonstration. La vue **Caméras** montre B6ing 0.5.0.
+Ces captures de B6ing **1.0.0** utilisent des images et des données de démonstration.
 
-### Caméras
+### Caméras · thème sombre
 
-![Grille de B6ing avec la configuration dépliée sous le direct Jardin. Le bouton de veille, le curseur de sensibilité et le bouton Appliquer sont visibles.](docs/captures/cameras.png)
+![Vue principale en thème Graphite et cyan avec Jardin en grand, deux caméras à droite et l’onglet Commandes en bas à gauche.](docs/captures/cameras.png)
+
+### Caméras · thème clair
+
+![Même grille en thème Blanc et bleu ardoise, avec les onglets à icônes et le bouton de veille.](docs/captures/cameras-clair.png)
 
 ### Alertes
 
@@ -24,8 +28,9 @@ Les captures utilisent des images et des données de démonstration. La vue **Ca
 
 ## Fonctionnalités
 
-- **Direct** en grille personnalisable ou en plein écran, vues mémorisées, profils Haute et Éco, retard estimé et bouton de retour au direct.
-- **Commandes** sur chaque vignette et en plein écran. Oriente la caméra au joystick ou avec les flèches du clavier. Pilote la lumière, la sirène et la vision jour/nuit.
+- **Direct** en vue principale, en grille personnalisable ou en plein écran, avec vues mémorisées, profils Haute et Éco, retard estimé et retour au direct.
+- **Commandes** dans le panneau à onglets de la caméra sélectionnée et en plein écran. Oriente la caméra au joystick ou avec les flèches du clavier. Pilote la lumière, la sirène et la vision jour/nuit.
+- **Apparence** avec les thèmes Graphite et cyan et Blanc et bleu ardoise. B6ing peut suivre automatiquement le thème d’Ubuntu.
 - **Configuration par caméra** avec mise en veille, réveil et cinq niveaux de sensibilité aux mouvements pour les modèles compatibles.
 - **Renouvellement automatique de la connexion Wansview Cloud** pour continuer à réveiller les caméras et à ouvrir le direct après plusieurs heures.
 - **Cadrage** avec zoom numérique jusqu’à 4× et positions favorites sur les caméras compatibles.
@@ -40,10 +45,10 @@ Les captures utilisent des images et des données de démonstration. La vue **Ca
 
 ### Paquet `.deb`
 
-Télécharge [b6ing_0.5.1_all.deb](https://github.com/Chrisnox-209/B6ing/releases/download/v0.5.1/b6ing_0.5.1_all.deb) pour **Ubuntu 26.04 LTS**. Dans le dossier de téléchargement, installe le paquet avec APT pour récupérer aussi ses dépendances.
+Télécharge [b6ing_1.0.0_all.deb](https://github.com/Chrisnox-209/B6ing/releases/download/v1.0.0/b6ing_1.0.0_all.deb) pour **Ubuntu 26.04 LTS**. Dans le dossier de téléchargement, installe le paquet avec APT pour récupérer aussi ses dépendances.
 
 ```sh
-sudo apt install ./b6ing_0.5.1_all.deb
+sudo apt install ./b6ing_1.0.0_all.deb
 ```
 
 Ouvre **B6ing** dans le menu Applications ou lance `b6ing` dans un terminal. La version installée est indiquée dans **Réglages** et par `b6ing --version`. Pour mettre à jour le paquet, installe le nouveau fichier `.deb` de la même façon.
@@ -72,12 +77,14 @@ Ouvre **B6ing** depuis le menu Applications ou lance `.venv/bin/python -m cinnad
 ## Utilisation
 
 1. Connecte-toi avec le compte Wansview Cloud auquel les caméras sont déjà associées. Active **Mémoriser le compte sur ce PC** pour utiliser le trousseau Ubuntu.
-2. Clique sur **Voir le direct**. Pour piloter une caméra au clavier, sélectionne sa vignette puis maintiens **↑**, **↓**, **←** ou **→**. En plein écran, les flèches pilotent la caméra affichée.
+2. Clique sur **▶ Voir le direct** dans la vignette. Pour piloter une caméra au clavier, sélectionne sa vignette puis maintiens **↑**, **↓**, **←** ou **→**. En plein écran, les flèches pilotent la caméra affichée.
 3. Ouvre **Réglages** pour renommer les caméras, choisir les dossiers des photos et vidéos, recevoir les alertes de mouvement ou activer le démarrage réduit. Utilise le menu de l’icône de notification pour réafficher la fenêtre ou quitter B6ing.
 
-Dans **Caméras**, clique sur **Modifier la grille**. Glisse les vignettes avec la poignée ou utilise les flèches. **Agrandir** donne toute la largeur à une caméra. L’icône de sauvegarde mémorise la disposition sous un nom. Clique sur ce nom pour la retrouver.
+Dans **Caméras**, la **Vue principale** agrandit la caméra sélectionnée. La **Grille** affiche l’image entière dans chaque vignette. Clique sur **Modifier la grille** pour déplacer ou agrandir une caméra, puis utilise l’icône de sauvegarde pour mémoriser la disposition sous un nom.
 
-L’engrenage déplie les réglages sous les commandes de la vignette. Dans **Configuration de la caméra**, utilise le bouton **⏻** pour mettre la caméra en veille ou la réveiller. Pour ajuster la **Sensibilité aux mouvements**, choisis un niveau de **Faible** à **Élevée** et clique sur **Appliquer**. B6ing relit le réglage Wansview pour confirmer l’enregistrement.
+Clique sur une vignette pour ouvrir les réglages de cette caméra en bas à gauche. Le bouton **⏻** permet de la mettre en veille ou de la réveiller. Les onglets **Commandes**, **Détection**, **Direct** et **Positions** regroupent ses options. Pour régler la sensibilité, choisis un niveau dans **Détection** et clique sur **Appliquer**. B6ing relit le réglage Wansview pour confirmer l’enregistrement.
+
+Dans **Réglages → Apparence**, choisis le thème clair **Blanc et bleu ardoise**, le thème sombre **Graphite et cyan** ou l’apparence d’Ubuntu.
 
 Pendant le direct, utilise **−** et **+** pour zoomer jusqu’à 4×, puis glisse dans l’image pour déplacer le cadrage. Sur les caméras compatibles, tu peux mémoriser jusqu’à quatre positions. Les numéros rappellent les positions Wansview Cloud et la maison rappelle le premier emplacement enregistré. **Revenir au direct** attend une image clé récente pour rattraper le retard estimé. B6ing peut rouvrir le flux si nécessaire, hors enregistrement local.
 
