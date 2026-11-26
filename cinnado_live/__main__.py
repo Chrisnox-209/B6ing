@@ -238,6 +238,8 @@ def latest_reading(previous, incoming):
 
 
 class CameraTile(Gtk.Box):
+    live_state = GObject.Property(type=str, default='idle')
+
     def __init__(self, camera, worker, index):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, hexpand=True, vexpand=True,
                          overflow=Gtk.Overflow.HIDDEN, css_classes=['camera-card'])
@@ -677,6 +679,14 @@ class CameraTile(Gtk.Box):
         for settings in (self.favorite_settings, self.fullscreen_favorite_settings):
             if settings is not None:
                 settings.refresh(slots, live=self.live_tools.is_sensitive(), busy=busy)
+        if self.task is not None:
+            state = 'playing' if self.camera_actions.get_sensitive() else 'connecting'
+        elif sleeping:
+            state = 'sleeping'
+        else:
+            state = 'busy' if busy else 'idle'
+        if self.live_state != state:
+            self.live_state = state
 
     def load_camera_options(self):
         self.run_camera_control(self.worker.account.read_camera_options(self.camera))
@@ -833,6 +843,7 @@ class CameraTile(Gtk.Box):
         self.task = self.worker.submit(request())
         self.task.add_done_callback(lambda future: GLib.idle_add(self.finish, generation, future))
         self.timer = GLib.timeout_add(25, self.drain, generation)
+        self.refresh_controls()
 
     def set_status(self, generation, message):
         if self.generation is generation:
@@ -1160,12 +1171,12 @@ class CameraTile(Gtk.Box):
         self.camera_actions.set_sensitive(False)
         self.live_tools.set_sensitive(False)
         self.quality_choice.set_sensitive(False)
+        self.status.set_label(message)
         self.refresh_controls()
         self.delay_label.set_label('Retard —')
         self.resolution.set_text('')
         self.placeholder.set_visible(True)
         self.set_playing(False)
-        self.status.set_label(message)
 
 
 class Window(Adw.ApplicationWindow):
@@ -1296,7 +1307,7 @@ class Window(Adw.ApplicationWindow):
         self.alerts_view = AlertsView(self.remove_alert, self.clear_alerts, self.open_alert_clip,
                                       self.download_alert_clip, self.request_alert_previews)
         self.account_pages.add_named(self.alerts_view, 'alerts')
-        self.sd_view = SdView(self.worker, Preview)
+        self.sd_view = SdView(self.worker, Preview, self.tile_for_camera)
         self.account_pages.add_named(self.sd_view, 'sd')
         self.cameras_button.set_active(True)
         self.stack.add_named(account_view, 'account')
@@ -1380,6 +1391,9 @@ class Window(Adw.ApplicationWindow):
 
     def refresh_sd_cameras(self):
         self.sd_view.set_cameras((tile.camera, tile.name_label.get_text()) for tile in self.tiles)
+
+    def tile_for_camera(self, camera):
+        return next((tile for tile in self.tiles if tile.camera is camera), None)
 
     def open_sd(self, *_):
         if not self.tiles:
@@ -1737,6 +1751,7 @@ class Window(Adw.ApplicationWindow):
         for index, camera in enumerate(cameras):
             tile = CameraTile(camera, self.worker, index + 1)
             tile.set_display_name(self.preferences.camera_names.get(camera.identifier, camera.name))
+            tile.connect('notify::live-state', self.sd_view.live_changed)
             self.tiles.append(tile)
             self.panels.add_child(tile.configuration)
             self.camera_grid.add(tile)

@@ -97,11 +97,12 @@ class ClipTimeline(Gtk.Widget):
 
 
 class SdView(Gtk.Box):
-    def __init__(self, worker, preview_factory):
+    def __init__(self, worker, preview_factory, tile_for_camera):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=14, margin_top=18,
                          margin_bottom=14, margin_start=14, margin_end=14, css_classes=['b6-archive'])
         self.worker = worker
         self.preview_factory = preview_factory
+        self.tile_for_camera = tile_for_camera
         self.cameras = ()
         self.days = ()
         self.items = ()
@@ -111,6 +112,7 @@ class SdView(Gtk.Box):
         self.active = False
         self.calendar_task = self.list_task = self.play_task = self.thumbnail_task = None
         self.day_after_calendar = None
+        self.waiting_for_live = False
         self.preview = self.frame_timer = self.thumbnail_timer = None
         self.tz = None
         self.selected = None
@@ -127,8 +129,13 @@ class SdView(Gtk.Box):
 
         browser = Gtk.Box(spacing=15, vexpand=True)
         self.append(browser)
-        date_picker = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, valign=Gtk.Align.START,
-                              css_classes=['sd-date-panel'])
+        recordings = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=9, hexpand=False)
+        browser.append(recordings)
+        date_picker = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, css_classes=['sd-date-panel'])
+        self.live_content = Adw.ButtonContent()
+        self.live_button = Gtk.Button(child=self.live_content)
+        self.live_button.connect('clicked', self.toggle_live)
+        date_picker.append(self.live_button)
         self.calendar = Gtk.Calendar()
         self.calendar.add_css_class('sd-calendar')
         self.calendar.connect('notify::date', self.mark_calendar)
@@ -138,19 +145,19 @@ class SdView(Gtk.Box):
         date_picker.append(list_button)
         self.calendar_status = Gtk.Label(xalign=0, wrap=True, max_width_chars=28, css_classes=['dim-label'])
         date_picker.append(self.calendar_status)
-        browser.append(date_picker)
+        recordings.append(date_picker)
+        self.list_status = Gtk.Label(xalign=0, wrap=True, max_width_chars=28, css_classes=['heading'])
+        recordings.append(self.list_status)
 
         results = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=9, hexpand=True)
         browser.append(results)
-        self.list_status = Gtk.Label(xalign=0, wrap=True, css_classes=['heading'])
-        results.append(self.list_status)
         self.timeline_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, visible=False,
                                     css_classes=['sd-timeline-card'])
         self.timeline = ClipTimeline(self.play)
         self.timeline_box.append(self.timeline)
         results.append(self.timeline_box)
 
-        self.player = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, visible=False,
+        self.player = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, visible=False, vexpand=True,
                               css_classes=['alert-player'])
         playback_header = Gtk.Box(spacing=6)
         self.play_status = Gtk.Label(xalign=0, hexpand=True, wrap=True)
@@ -164,23 +171,68 @@ class SdView(Gtk.Box):
         for button in (self.previous, self.next, close):
             playback_header.append(button)
         self.player.append(playback_header)
-        self.picture = Gtk.Picture(content_fit=Gtk.ContentFit.CONTAIN, can_shrink=True,
+        self.picture = Gtk.Picture(content_fit=Gtk.ContentFit.CONTAIN, can_shrink=True, vexpand=True,
                                    height_request=230, css_classes=['video-area'])
         self.player.append(self.picture)
         results.append(self.player)
 
         self.clips = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE, css_classes=['boxed-list', 'archive-list'])
-        self.scroll = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, vexpand=True,
+        self.scroll = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, vexpand=True, visible=False,
                                          min_content_height=100, child=self.clips)
-        results.append(self.scroll)
+        recordings.append(self.scroll)
         adjustment = self.scroll.get_vadjustment()
         adjustment.connect('changed', self.schedule_previews)
         adjustment.connect('value-changed', self.schedule_previews)
         self.connect('map', self.schedule_previews)
+        self.update_live_button()
 
     def selected_camera(self):
         index = self.selector.get_selected()
         return self.cameras[index][0] if index < len(self.cameras) else None
+
+    def update_live_button(self):
+        tile = self.tile_for_camera(self.selected_camera())
+        state = tile.live_state if tile is not None else None
+        icon = 'media-playback-start-symbolic'
+        label, tooltip = 'Lancer le direct', 'Ouvrir le direct et relancer le chargement du calendrier'
+        if state == 'connecting':
+            icon, label = 'media-playback-stop-symbolic', 'Connexion au direct…'
+            tooltip = 'Annuler l’ouverture du direct'
+        elif state == 'playing':
+            icon, label = 'media-playback-stop-symbolic', 'Arrêter le direct'
+            tooltip = 'Arrêter le direct de cette caméra'
+        elif state == 'sleeping':
+            icon, label = 'system-shutdown-symbolic', 'Caméra en veille'
+            tooltip = 'Réveille la caméra dans les réglages de sa vignette.'
+        elif state == 'busy':
+            tooltip = 'Lecture ou modification des réglages de la caméra en cours'
+        self.live_content.set_icon_name(icon)
+        self.live_content.set_label(label)
+        self.live_button.set_tooltip_text(tooltip)
+        self.live_button.update_property([Gtk.AccessibleProperty.LABEL, Gtk.AccessibleProperty.DESCRIPTION],
+                                         [label, tooltip])
+        self.live_button.set_sensitive(state in ('idle', 'connecting', 'playing'))
+
+    def toggle_live(self, *_):
+        tile = self.tile_for_camera(self.selected_camera())
+        if tile is None or not self.live_button.get_sensitive():
+            return
+        reload_calendar = tile.live_state == 'idle' and not self.items
+        day = self.picked_day() if self.list_task is not None else self.day_after_calendar
+        tile.toggle()
+        if reload_calendar:
+            self.load_calendar(day=day)
+
+    def live_changed(self, tile, _property):
+        if tile.camera is not self.selected_camera():
+            return
+        self.update_live_button()
+        if self.waiting_for_live and tile.live_state != 'connecting':
+            if tile.live_state == 'playing':
+                self.load_calendar(day=self.day_after_calendar)
+            else:
+                self.waiting_for_live = False
+                self.calendar_status.set_label(tile.status.get_label())
 
     def set_cameras(self, cameras):
         cameras = tuple(cameras)
@@ -192,6 +244,7 @@ class SdView(Gtk.Box):
             self.selector.set_model(Gtk.StringList.new([name for _, name in cameras]))
             self.selector.set_selected(next((i for i, (camera, _) in enumerate(cameras) if camera is selected), 0)
                                        if cameras else Gtk.INVALID_LIST_POSITION)
+        self.update_live_button()
         if self.selected_camera() is not selected:
             self.days = ()
             self.mark_calendar()
@@ -221,9 +274,11 @@ class SdView(Gtk.Box):
                 task.cancel()
         self.calendar_task = self.list_task = None
         self.day_after_calendar = None
+        self.waiting_for_live = False
         self.cancel_previews()
 
     def camera_changed(self, *_):
+        self.update_live_button()
         if self.active:
             self.days = ()
             self.mark_calendar()
@@ -247,17 +302,26 @@ class SdView(Gtk.Box):
         self.rows.clear()
         self.items = ()
         self.clips.remove_all()
+        self.scroll.set_visible(False)
         self.timeline.set_clips(())
         self.timeline_box.set_visible(False)
 
-    def load_calendar(self, *_):
+    def load_calendar(self, *_, day=None):
         camera = self.selected_camera()
         if camera is None:
             return
+        if day is None and self.waiting_for_live:
+            day = self.day_after_calendar
         self.cancel_queries()
         self.clear_clips()
-        self.calendar_status.set_label('Chargement du calendrier…')
+        self.day_after_calendar = day
         self.list_status.set_label('Choisis un jour pour afficher ses clips.')
+        tile = self.tile_for_camera(camera)
+        if tile is not None and tile.live_state == 'connecting':
+            self.waiting_for_live = True
+            self.calendar_status.set_label('Le calendrier se chargera dès que le direct sera actif.')
+            return
+        self.calendar_status.set_label('Chargement du calendrier…')
         task = self.calendar_task = self.worker.submit(self.worker.account.read_sd_calendar(camera))
         task.add_done_callback(lambda future: GLib.idle_add(self.calendar_finished, future))
 
@@ -291,7 +355,7 @@ class SdView(Gtk.Box):
 
     def load_clips(self, *_):
         day = self.picked_day()
-        if self.calendar_task is not None:
+        if self.waiting_for_live or self.calendar_task is not None:
             self.day_after_calendar = day
             self.list_status.set_label(f'Clips du {day:%d/%m/%Y} après le chargement du calendrier…')
             return
@@ -325,6 +389,7 @@ class SdView(Gtk.Box):
 
     def show_clips(self, day, camera_id):
         total = len(self.items)
+        self.scroll.set_visible(bool(total))
         if total and day not in self.days:
             self.days = tuple(sorted((*self.days, day)))
             self.mark_calendar()
