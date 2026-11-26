@@ -8,7 +8,7 @@ B6ing est une application de bureau pour voir et piloter des caméras solaires *
 
 ## Aperçu
 
-Ces captures de B6ing **1.0.0** utilisent des images et des données de démonstration.
+Ces captures de B6ing utilisent des images et des données de démonstration.
 
 ### Caméras · thème sombre
 
@@ -24,7 +24,7 @@ Ces captures de B6ing **1.0.0** utilisent des images et des données de démonst
 
 ### MicroSD
 
-![Page MicroSD avec les jours enregistrés marqués d’une pastille, la frise de la journée, le lecteur et les miniatures des clips.](docs/captures/microsd.png)
+![Page MicroSD avec la commande du direct et les miniatures sous le calendrier, à côté de la frise et du lecteur.](docs/captures/microsd.png)
 
 ## Fonctionnalités
 
@@ -38,17 +38,17 @@ Ces captures de B6ing **1.0.0** utilisent des images et des données de démonst
 - **Captures et enregistrements** en PNG et MKV, avec deux dossiers configurables. Les noms de fichiers reprennent le nom de la caméra et l’heure de début, avec la date.
 - **État des caméras** avec niveau de batterie, signal Wi-Fi et notifications de mouvement, selon les données renvoyées par Wansview Cloud.
 - **Journal d’alertes** avec miniatures, lecteur intégré et téléchargement des clips disponibles dans AJCloud.
-- **MicroSD** avec calendrier, pastilles sur les jours enregistrés, frise cliquable, miniatures et lecture à distance sur les caméras compatibles.
+- **MicroSD** avec commande du direct, calendrier des jours enregistrés, miniatures sous le calendrier, frise cliquable et lecture à distance sur les caméras compatibles.
 - **Intégration Ubuntu** avec mémorisation facultative du compte dans le trousseau, icône de zone de notification et démarrage réduit à l’ouverture de session.
 
 ## Installation sur Ubuntu
 
 ### Paquet `.deb`
 
-Télécharge [b6ing_1.0.0_all.deb](https://github.com/Chrisnox-209/B6ing/releases/download/v1.0.0/b6ing_1.0.0_all.deb) pour **Ubuntu 26.04 LTS**. Dans le dossier de téléchargement, installe le paquet avec APT pour récupérer aussi ses dépendances.
+Télécharge [b6ing_1.0.1_all.deb](https://github.com/Chrisnox-209/B6ing/releases/download/v1.0.1/b6ing_1.0.1_all.deb) pour **Ubuntu 26.04 LTS**. Dans le dossier de téléchargement, installe le paquet avec APT pour récupérer aussi ses dépendances.
 
 ```sh
-sudo apt install ./b6ing_1.0.0_all.deb
+sudo apt install ./b6ing_1.0.1_all.deb
 ```
 
 Ouvre **B6ing** dans le menu Applications ou lance `b6ing` dans un terminal. La version installée est indiquée dans **Réglages** et par `b6ing --version`. Pour mettre à jour le paquet, installe le nouveau fichier `.deb` de la même façon.
@@ -90,7 +90,9 @@ Pendant le direct, utilise **−** et **+** pour zoomer jusqu’à 4×, puis gli
 
 Dans **Alertes**, le journal conserve les 200 derniers mouvements reçus par B6ing et affiche les miniatures disponibles dans AJCloud. À l’ouverture des alertes, le lecteur charge le clip le plus récent au-dessus de la liste et le laisse en pause. **▶** lance la lecture. L’icône de téléchargement enregistre la vidéo dans le dossier choisi dans **Réglages**. Tu peux effacer une alerte ou vider le journal avec **Tout effacer**.
 
-Dans **MicroSD**, les pastilles bleues indiquent les jours contenant des enregistrements. Sélectionne une caméra et une date, puis clique sur **Voir les clips du jour**. Les bandes de la frise ouvrent les clips correspondants dans le lecteur intégré. B6ing génère les miniatures des clips visibles à partir des images enregistrées sur la carte. La disponibilité de la lecture et des commandes dépend du modèle et de la connexion de la caméra.
+Dans **MicroSD**, sélectionne une caméra. Si son calendrier tarde à charger, clique sur **▶ Lancer le direct** au-dessus du calendrier. B6ing reprend le chargement dès la première image, y compris la liste du jour si tu l’as déjà demandée. Tu peux aussi arrêter le direct depuis ce bouton.
+
+Les pastilles bleues indiquent les jours contenant des enregistrements. Sélectionne une date et clique sur **Voir les clips du jour**. Les miniatures défilent sous le calendrier pendant que le lecteur reste visible à droite. Tu peux ouvrir un clip depuis sa ligne ou la frise. La disponibilité de la lecture et des commandes dépend du modèle et de la connexion de la caméra.
 
 ## Développement
 
