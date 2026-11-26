@@ -70,11 +70,10 @@ class ClipTimeline(Gtk.Widget):
 
     def do_snapshot(self, snapshot):
         width = self.get_width()
-        track, segment, selected, label_color = (Gdk.RGBA() for _ in range(4))
-        track.parse('#334555')
-        segment.parse('#48c4e5')
-        selected.parse('#fbb75e')
-        label_color.parse('#7c8897')
+        style = self.get_style_context()
+        track, segment, selected, label_color = (
+            style.lookup_color(name)[1] for name in ('b6_line', 'b6_focus', 'b6_action', 'b6_muted')
+        )
         snapshot.append_color(track, Graphene.Rect().init(0, 12, width, 12))
         for label, fraction in self.ticks:
             x = min(width - 1, width * fraction)
@@ -100,7 +99,7 @@ class ClipTimeline(Gtk.Widget):
 class SdView(Gtk.Box):
     def __init__(self, worker, preview_factory):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=14, margin_top=18,
-                         margin_bottom=18, margin_start=18, margin_end=18)
+                         margin_bottom=14, margin_start=14, margin_end=14, css_classes=['b6-archive'])
         self.worker = worker
         self.preview_factory = preview_factory
         self.cameras = ()
@@ -116,8 +115,7 @@ class SdView(Gtk.Box):
         self.tz = None
         self.selected = None
 
-        header = Gtk.Box(spacing=8)
-        header.append(Gtk.Label(label='Carte microSD', xalign=0, hexpand=True, css_classes=['title-2']))
+        header = Gtk.Box(spacing=8, halign=Gtk.Align.END, css_classes=['archive-toolbar'])
         self.selector = Gtk.DropDown()
         self.selector.update_property([Gtk.AccessibleProperty.LABEL], ['Caméra pour la lecture microSD'])
         self.camera_handler = self.selector.connect('notify::selected', self.camera_changed)
@@ -129,7 +127,8 @@ class SdView(Gtk.Box):
 
         browser = Gtk.Box(spacing=15, vexpand=True)
         self.append(browser)
-        date_picker = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, valign=Gtk.Align.START)
+        date_picker = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, valign=Gtk.Align.START,
+                              css_classes=['sd-date-panel'])
         self.calendar = Gtk.Calendar()
         self.calendar.add_css_class('sd-calendar')
         self.calendar.connect('notify::date', self.mark_calendar)
@@ -170,7 +169,7 @@ class SdView(Gtk.Box):
         self.player.append(self.picture)
         results.append(self.player)
 
-        self.clips = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE, css_classes=['boxed-list'])
+        self.clips = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE, css_classes=['boxed-list', 'archive-list'])
         self.scroll = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, vexpand=True,
                                          min_content_height=100, child=self.clips)
         results.append(self.scroll)

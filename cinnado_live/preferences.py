@@ -1,4 +1,4 @@
-"""Persistent local media destinations, camera views and PTZ favorites."""
+"""Persistent appearance, media destinations, camera views and PTZ favorites."""
 
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -8,6 +8,8 @@ import re
 from tempfile import NamedTemporaryFile
 
 from .vendor_r2.camera_protocol import valid_ptz_position
+
+THEMES = ('system', 'light', 'dark')
 
 
 def _local_folder(value) -> Path | None:
@@ -33,6 +35,7 @@ def _media_path(folder, default_folder, name, index, started, extension):
 class GridLayout:
     order: tuple[str, ...] = ()
     large: frozenset[str] = frozenset()
+    focused: bool = True
 
     @classmethod
     def from_data(cls, data):
@@ -40,11 +43,14 @@ class GridLayout:
             return cls()
         order = data.get('order')
         large = data.get('large')
-        return cls(tuple(dict.fromkeys(key for key in order if isinstance(key, str))) if isinstance(order, list) else (),
-                   frozenset(key for key in large if isinstance(key, str)) if isinstance(large, list) else frozenset())
+        order = tuple(dict.fromkeys(key for key in order if isinstance(key, str))) if isinstance(order, list) else ()
+        large = frozenset(key for key in large if isinstance(key, str)) if isinstance(large, list) else frozenset()
+        # Existing personalized layouts retain their original geometry.
+        focused = data.get('focused')
+        return cls(order, large, focused if isinstance(focused, bool) else not (order or large))
 
     def as_data(self):
-        return {'order': self.order, 'large': sorted(self.large)}
+        return {'order': self.order, 'large': sorted(self.large), 'focused': self.focused}
 
     def arrange(self, camera_ids):
         available = tuple(camera_ids)
@@ -61,6 +67,7 @@ class Preferences:
     camera_views: dict[str, GridLayout] = field(default_factory=dict)
     # Keep positions saved by older versions when rewriting the preferences.
     camera_positions: dict[str, dict[str, tuple[int, int]]] = field(default_factory=dict)
+    theme: str = 'system'
 
     @classmethod
     def load(cls, path: Path) -> 'Preferences':
@@ -73,10 +80,12 @@ class Preferences:
         names = data.get('camera_names')
         views = data.get('camera_views')
         positions = data.get('camera_positions')
+        theme = data.get('theme')
         return cls(
             recording_folder=_local_folder(data.get('recording_folder')),
             photo_folder=_local_folder(data.get('photo_folder')),
             motion_notifications=data.get('motion_notifications') is not False,
+            theme=theme if theme in THEMES else 'system',
             camera_names={key: name.strip()[:70] for key, name in names.items()
                           if isinstance(name, str) and name.strip()} if isinstance(names, dict) else {},
             camera_grid=GridLayout.from_data(data.get('camera_grid')),
@@ -96,6 +105,7 @@ class Preferences:
             'photo_folder': str(self.photo_folder) if self.photo_folder is not None else None,
             'camera_names': self.camera_names,
             'motion_notifications': self.motion_notifications,
+            'theme': self.theme,
             'camera_grid': self.camera_grid.as_data(),
             'camera_views': {name: layout.as_data() for name, layout in self.camera_views.items()},
             'camera_positions': self.camera_positions,

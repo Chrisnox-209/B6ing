@@ -11,6 +11,7 @@ class CameraViewTests(unittest.TestCase):
         layout = GridLayout.from_data({'order': ['b', 'b', 'missing', 'a'], 'large': ['b']})
         self.assertEqual(layout.arrange(('a', 'b', 'new')), ('b', 'a', 'new'))
         self.assertEqual(layout.large, {'b'})
+        self.assertFalse(layout.focused)
 
     def test_preferences_keep_legacy_fields_and_save_layouts_and_positions(self):
         with TemporaryDirectory() as directory:
@@ -20,12 +21,18 @@ class CameraViewTests(unittest.TestCase):
             self.assertFalse(legacy.motion_notifications)
             self.assertEqual(legacy.camera_names, {'a': 'Balcon'})
             self.assertEqual(legacy.camera_grid, GridLayout())
-            layout = GridLayout(('b', 'a'), frozenset({'b'}))
+            self.assertEqual(legacy.theme, 'system')
+            layout = GridLayout(('b', 'a'), frozenset({'b'}), focused=False)
             preferences = Preferences(camera_names=legacy.camera_names, motion_notifications=False,
                                       camera_grid=layout, camera_views={'Entrée': layout},
-                                      camera_positions={'a': {'Portail': (-13, 123)}})
+                                      camera_positions={'a': {'Portail': (-13, 123)}}, theme='dark')
             preferences.save(path)
             self.assertEqual(Preferences.load(path), preferences)
+
+    def test_focused_layout_preserves_its_explicit_camera_order(self):
+        layout = GridLayout.from_data({'order': ['b', 'a'], 'focused': True})
+        self.assertTrue(layout.focused)
+        self.assertEqual(layout.arrange(('a', 'b')), ('b', 'a'))
 
     def test_camera_favorites_show_only_saved_slots_for_the_primary_lens(self):
         metadata = {

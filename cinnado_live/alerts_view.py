@@ -41,7 +41,8 @@ def _icon_button(icon, description):
 class AlertsView(Gtk.Box):
     def __init__(self, remove, clear, play_clip, download_clip, request_previews):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=12,
-                         margin_top=18, margin_bottom=18, margin_start=18, margin_end=18)
+                         margin_top=14, margin_bottom=14, margin_start=14, margin_end=14,
+                         css_classes=['b6-archive'])
         self.remove = remove
         self.clear = clear
         self.play_clip = play_clip
@@ -55,8 +56,7 @@ class AlertsView(Gtk.Box):
         self.active = False
         self.preview_source = None
 
-        header = Gtk.Box(spacing=12)
-        header.append(Gtk.Label(label='Alertes de mouvement', xalign=0, hexpand=True, css_classes=['title-2']))
+        header = Gtk.Box(halign=Gtk.Align.END, css_classes=['archive-toolbar'])
         self.clear_button = Gtk.Button(label='Tout effacer')
         self.clear_button.connect('clicked', self.confirm_clear)
         header.append(self.clear_button)
@@ -70,7 +70,7 @@ class AlertsView(Gtk.Box):
         self.pages.add_named(self.empty, 'empty')
 
         self.listbox = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
-        self.listbox.add_css_class('boxed-list')
+        self.listbox.set_css_classes(['boxed-list', 'archive-list'])
         self.scroll = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
         self.scroll.set_child(self.listbox)
         self.pages.add_named(self.scroll, 'entries')

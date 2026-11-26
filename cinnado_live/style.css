@@ -1,110 +1,205 @@
-@define-color b6_cyan #33c9ef;
-@define-color b6_ink #092839;
-
-.brand-icon { color: #000; }
-.brand-icon.theme-dark { color: #fff; }
-
-.view-card {
-    padding: 16px;
-    border-radius: 18px;
-    border: 1px solid alpha(@window_fg_color, .09);
-    background: @card_bg_color;
+.b6-window, .b6-main, .b6-settings {
+    background: @b6_canvas;
+    color: @b6_text;
 }
-.view-card.keyboard-camera { box-shadow: inset 0 0 0 2px alpha(@b6_cyan, .86); }
-.video-area { background: #0f1721; border-radius: 12px; color: #9bb9d0; }
-.camera-placeholder { color: #f4f6f8; }
-.live-button { border-radius: 10px; background: @b6_cyan; color: @b6_ink; }
-.live-button:hover { background: shade(@b6_cyan, 1.12); }
+.b6-header {
+    min-height: 58px;
+    background: @b6_sidebar;
+    color: @b6_text;
+    box-shadow: inset 0 -1px @b6_line;
+}
+.b6-brand { padding-left: 13px; }
+.brand-icon { color: @b6_text; }
+.b6-wordmark { font-size: 24px; font-weight: 800; }
+.b6-page-title { padding: 0 8px; font-size: 26px; font-weight: 800; }
+.b6-header-settings image { -gtk-icon-size: 21px; }
+.b6-settings headerbar { background: @b6_sidebar; color: @b6_text; }
 
 .b6-sidebar {
-    padding: 14px 10px;
-    background: alpha(@window_fg_color, .035);
-    border-right: 1px solid alpha(@window_fg_color, .10);
+    padding: 12px 8px 14px;
+    background: @b6_sidebar;
+    border-right: 1px solid @b6_line;
 }
-.b6-nav-button { border-radius: 10px; padding: 0 10px; min-height: 38px; }
-.b6-nav-button:checked { background: alpha(@accent_bg_color, .22); }
+.b6-nav-button {
+    padding: 0 14px;
+    min-height: 38px;
+    border-radius: 9px;
+    color: @b6_text;
+    font-weight: 650;
+}
+.b6-nav-button:hover { background: @b6_hover; }
+.b6-nav-button:checked { background: @b6_nav_bg; color: @b6_nav_fg; }
+.b6-sidebar-divider { margin: 8px 5px 0; background: @b6_line; }
+
+.view-card, .camera-settings, .alert-player, .sd-timeline-card, .sd-date-panel {
+    border: 1px solid @b6_line;
+    border-radius: 13px;
+    background: @b6_surface;
+    color: @b6_text;
+}
+.view-card { padding: 20px; }
+.b6-window .suggested-action:not(.control-icon), .b6-settings .suggested-action {
+    background: @b6_action;
+    color: @b6_action_ink;
+    border-radius: 9px;
+}
+.b6-window .suggested-action:not(.control-icon):hover, .b6-settings .suggested-action:hover {
+    background: shade(@b6_action, 1.1);
+}
+.b6-window .suggested-action:not(.control-icon):disabled {
+    background: alpha(@b6_action, .17);
+    color: @b6_muted;
+}
+.b6-window .dim-label { color: @b6_muted; opacity: 1; }
+
+.camera-grid-toolbar { padding: 9px 14px 0; }
+.camera-view-button { border-radius: 8px; }
+.camera-view-button.active-view { background: @b6_nav_bg; color: @b6_nav_fg; }
+.grid-edit-button { background: @b6_hover; color: @b6_text; }
+.grid-edit-button:checked { background: @b6_nav_bg; color: @b6_nav_fg; }
+.camera-layout-controls { padding: 4px 8px; background: @b6_hover; }
+.camera-drag-handle { padding: 0 6px; color: @b6_focus; }
+.camera-card {
+    border-radius: 13px;
+    border: 2px solid @b6_line;
+    background: @b6_surface;
+    color: @b6_text;
+}
+.camera-card.selected-camera { border-color: @b6_focus; }
+.camera-heading { padding: 7px 11px; }
+.camera-select-button { min-height: 0; padding: 0; color: @b6_text; }
+.camera-select-button:hover { background: transparent; color: @b6_focus; }
+.camera-name { font-size: 18px; font-weight: 780; }
+.primary-camera .camera-name { font-size: 22px; }
+.camera-heading .reading-badge { padding: 2px 3px; background: transparent; }
+.camera-heading .reading-badge.wifi-reading image { color: @b6_focus; }
+.camera-heading .reading-badge label { font-size: .92em; font-weight: 650; }
+.camera-stage, .video-area {
+    background: #141820;
+    color: #dbe2ed;
+}
+.video-area { border-radius: 9px; }
+.camera-placeholder {
+    padding: 12px;
+    border-radius: 10px;
+    background: alpha(#141820, .84);
+    color: #e0e5ef;
+}
+.camera-placeholder image { opacity: .67; }
+.camera-media .control-icon {
+    min-height: 30px;
+    min-width: 30px;
+    padding: 0;
+    color: #f6f7fb;
+    background: alpha(#181b22, .88);
+    border: 1px solid alpha(#ffffff, .50);
+    border-radius: 7px;
+}
+.camera-media .control-icon:hover, .camera-media .control-icon:checked {
+    background: @b6_focus;
+    color: @b6_focus_ink;
+}
+.camera-media .control-icon:disabled {
+    color: alpha(#ffffff, .44);
+    background: alpha(#181b22, .68);
+    border-color: alpha(#ffffff, .25);
+}
+.camera-media .record-control.destructive-action { background: #a71938; color: #ffffff; }
+
+.camera-settings { padding: 9px 8px 11px; }
+.camera-settings-title { font-size: 16px; font-weight: 750; }
+.camera-settings-tabs { border-bottom: 1px solid @b6_line; }
+.camera-settings-tabs > button {
+    padding: 0 6px;
+    min-width: 0;
+    min-height: 35px;
+    border-radius: 0;
+    color: @b6_muted;
+    background: transparent;
+    box-shadow: none;
+    border-bottom: 2px solid transparent;
+}
+.camera-settings-tabs > button image { -gtk-icon-size: 19px; }
+.camera-settings-tabs > button:hover { background: @b6_hover; }
+.camera-settings-tabs > button:checked {
+    color: @b6_focus;
+    background: alpha(@b6_focus, .10);
+    border-bottom-color: @b6_action;
+}
+.motion-scale trough highlight { background: @b6_focus; }
+.motion-scale slider { background: @b6_focus; }
+.motion-scale marks mark indicator { background: @b6_muted; }
+
+.b6-archive { color: @b6_text; }
+.archive-toolbar { padding: 0 0 2px; }
+.archive-list {
+    color: @b6_text;
+    background: @b6_surface;
+    border: 1px solid @b6_line;
+    border-radius: 12px;
+}
+.archive-list > row { padding: 1px 5px; }
+.archive-list > row:hover { background: @b6_hover; }
 .alert-thumbnail {
     margin: 6px 3px 6px 0;
     border-radius: 7px;
-    background: #0f1721;
-    color: #9bb9d0;
+    background: #141820;
+    color: #dbe2ed;
 }
-.alert-play { background: alpha(@accent_bg_color, .22); }
-.alert-play:hover { background: alpha(@accent_bg_color, .35); }
-.alert-player {
-    padding: 10px;
-    border-radius: 12px;
-    background: @card_bg_color;
-    border: 1px solid alpha(@window_fg_color, .09);
+.alert-play { background: @b6_nav_bg; color: @b6_nav_fg; }
+.alert-play:hover { background: @b6_focus; color: @b6_focus_ink; }
+.alert-player { padding: 11px; }
+.sd-date-panel { padding: 10px; }
+calendar.sd-calendar {
+    background: @b6_surface;
+    color: @b6_text;
+    border: 0;
 }
 calendar.sd-calendar > grid > label.day-number:checked {
-    background-image: radial-gradient(circle at center, @b6_cyan 44%, @b6_ink 53%, @b6_ink 58%, transparent 70%);
+    background-image: radial-gradient(circle at center, @b6_focus 44%, @b6_surface 53%, @b6_surface 58%, transparent 70%);
     background-size: 9px 9px;
     background-position: 90% 86%;
     background-repeat: no-repeat;
 }
-calendar.sd-calendar > grid > label.day-number:checked:not(:selected) {
-    background-color: transparent;
-}
-.sd-timeline-card {
-    padding: 5px 10px 9px;
-    border-radius: 12px;
-    background: @card_bg_color;
-    border: 1px solid alpha(@window_fg_color, .09);
-}
-.sd-clip-selected { background: alpha(@b6_cyan, .14); }
-.camera-grid-toolbar { padding: 12px 18px 0; }
-.camera-view-button { border-radius: 9px; }
-.camera-view-button.active-view { background: alpha(@b6_cyan, .22); }
-.camera-layout-controls { padding: 4px; border-radius: 10px; background: alpha(@b6_cyan, .09); }
-.camera-drag-handle { padding: 0 6px; color: @b6_cyan; }
+calendar.sd-calendar > grid > label.day-number:checked:not(:selected) { background-color: transparent; }
+calendar.sd-calendar > grid > label.day-number:selected { background-color: @b6_action; color: @b6_action_ink; }
+.sd-timeline-card { padding: 5px 10px 9px; }
+.clip-timeline { color: @b6_text; }
+.sd-clip-selected { background: @b6_nav_bg; }
 
 .media-strip {
     padding: 4px;
-    border-radius: 12px;
-    background: alpha(@window_fg_color, .05);
+    border-radius: 10px;
+    background: @b6_hover;
 }
 .media-strip > label { padding: 0 6px; }
-.tile-camera-settings {
-    padding: 10px;
-    border-radius: 12px;
-    border: 1px solid alpha(@window_fg_color, .10);
-    background: alpha(@window_fg_color, .04);
-}
-.camera-configuration {
-    padding-bottom: 8px;
-    border-bottom: 1px solid alpha(@window_fg_color, .10);
-}
-.camera-live-tools > flowboxchild { padding: 0; }
-.fullscreen-position-settings { padding: 0 16px 9px; }
+.fullscreen-position-settings { padding: 0 16px 9px; background: @b6_sidebar; }
 .favorite-shortcuts > separator { margin: 6px 0; }
 .control-cluster {
-    padding: 3px;
-    border: 1px solid alpha(@window_fg_color, .12);
-    border-radius: 12px;
-    background: alpha(@window_fg_color, .05);
+    padding: 2px;
+    border: 1px solid @b6_line;
+    border-radius: 9px;
+    background: @b6_hover;
 }
 .control-icon, .quality-control > button {
-    min-height: 32px;
-    min-width: 32px;
-    padding: 0 4px;
+    min-height: 30px;
+    min-width: 30px;
+    padding: 0 3px;
     border: 1px solid transparent;
-    border-radius: 9px;
+    border-radius: 7px;
     box-shadow: none;
-    background: alpha(@window_fg_color, .07);
-    color: @window_fg_color;
+    background: @b6_hover;
+    color: @b6_text;
 }
 .control-cluster > .control-icon { background: transparent; }
 .control-cluster > .control-icon:hover, .control-icon:hover, .quality-control > button:hover {
-    background: alpha(@b6_cyan, .18);
-    border-color: alpha(@b6_cyan, .33);
+    background: @b6_nav_bg;
+    color: @b6_nav_fg;
 }
-.control-cluster > .control-icon.suggested-action, .control-icon:checked {
-    background: @b6_cyan;
-    border-color: @b6_cyan;
-    color: @b6_ink;
+.control-cluster > .control-icon.suggested-action, .control-icon:checked, .control-icon.wake-camera {
+    background: @b6_focus;
+    color: @b6_focus_ink;
 }
-.control-icon.wake-camera { background: @b6_cyan; color: @b6_ink; }
 .control-cluster > .control-icon.destructive-action, .control-icon.destructive-action {
     background: alpha(@error_color, .15);
     color: @error_color;
@@ -115,36 +210,38 @@ calendar.sd-calendar > grid > label.day-number:checked:not(:selected) {
 }
 .record-control.destructive-action { background: @error_bg_color; color: @error_fg_color; }
 .control-icon:focus-visible, .quality-control > button:focus-visible {
-    outline: 2px solid @b6_cyan;
+    outline: 2px solid @b6_focus;
     outline-offset: -2px;
 }
 .control-cluster > .control-icon:disabled, .control-icon:disabled, .quality-control > button:disabled {
-    color: alpha(@window_fg_color, .38);
+    color: alpha(@b6_text, .40);
     background: transparent;
     border-color: transparent;
 }
 .quality-control > button { padding: 0 9px; }
 
-.joystick { background: alpha(@b6_cyan, .12); border-radius: 72px; }
+.joystick { background: alpha(@b6_focus, .12); border-radius: 72px; }
 .joystick.video-control {
-    background: alpha(@window_bg_color, .96);
-    border: 1px solid alpha(@b6_cyan, .30);
+    color: #ffffff;
+    background: alpha(#191d23, .93);
+    border: 1px solid alpha(#ffffff, .45);
 }
 .joystick-arrow { font-weight: bold; font-size: 21px; border-radius: 24px; }
-.joystick-active { background: @b6_cyan; color: @b6_ink; }
-.joystick-center { font-size: 25px; color: @b6_cyan; }
+.joystick.video-control .joystick-arrow { color: #ffffff; }
+.joystick-arrow.joystick-active { background: @b6_focus; color: @b6_focus_ink; }
+.joystick-center { font-size: 25px; color: @b6_focus; }
 .joystick.compact .joystick-arrow { font-size: 16px; }
 .joystick.compact .joystick-center { font-size: 17px; }
 .reading-badge {
     padding: 4px 8px;
-    background-color: @window_bg_color;
-    color: @window_fg_color;
-    border-radius: 8px;
+    background-color: @b6_surface;
+    color: @b6_text;
+    border-radius: 7px;
 }
-.reading-badge.weak-reading { color: @error_color; }
+.reading-badge.weak-reading, .camera-heading .reading-badge.weak-reading image { color: @error_color; }
 .fullscreen-toolbar {
     padding: 9px 16px;
-    background-color: @window_bg_color;
-    color: @window_fg_color;
-    border-top: 1px solid alpha(@b6_cyan, .34);
+    background: @b6_sidebar;
+    color: @b6_text;
+    border-top: 1px solid @b6_line;
 }

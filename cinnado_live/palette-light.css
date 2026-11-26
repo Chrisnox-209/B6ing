@@ -1,0 +1,22 @@
+@define-color b6_canvas #f5f7fa;
+@define-color b6_sidebar #edf2f7;
+@define-color b6_surface #ffffff;
+@define-color b6_text #172634;
+@define-color b6_muted #526476;
+@define-color b6_line #cfd9e3;
+@define-color b6_hover #e5edf5;
+@define-color b6_nav_bg #dceaf8;
+@define-color b6_nav_fg #234c72;
+@define-color b6_focus #2e679f;
+@define-color b6_focus_ink #ffffff;
+@define-color b6_action #295986;
+@define-color b6_action_ink #ffffff;
+
+.camera-heading > .camera-select-button {
+    background: transparent;
+    box-shadow: none;
+}
+.camera-heading > .camera-select-button:focus-visible {
+    outline: 2px solid @b6_focus;
+    outline-offset: 2px;
+}

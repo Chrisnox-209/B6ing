@@ -1,6 +1,6 @@
 """Per-camera configuration and direct controls."""
 
-from gi.repository import Adw, Gtk
+from gi.repository import Gtk, Pango
 
 from .camera_grid import icon_button
 from .engine import FAVORITE_SLOTS
@@ -9,28 +9,33 @@ from .engine import FAVORITE_SLOTS
 class CameraConfiguration(Gtk.Box):
     SENSITIVITY = {1: 'Faible', 2: 'Plutôt faible', 3: 'Normale', 4: 'Plutôt élevée', 5: 'Élevée'}
 
-    def __init__(self, toggle_power, apply_sensitivity):
-        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=8, visible=False,
-                         css_classes=['camera-configuration'])
+    def __init__(self, toggle_power, apply_sensitivity, direct, commands, positions):
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=10, css_classes=['camera-settings'])
         self.saved_sensitivity = None
         header = Gtk.Box(spacing=8)
-        header.append(Gtk.Label(label='Configuration de la caméra', xalign=0, hexpand=True, wrap=True,
-                                css_classes=['heading']))
-        self.power_content = Adw.ButtonContent(icon_name='system-shutdown-symbolic')
-        self.power = Gtk.Button(child=self.power_content, css_classes=['control-icon'])
+        self.title = Gtk.Label(xalign=0, hexpand=True, ellipsize=Pango.EllipsizeMode.END,
+                               css_classes=['camera-settings-title'])
+        header.append(self.title)
+        self.power = icon_button('system-shutdown-symbolic', 'Mettre la caméra en veille')
         self.power.connect('clicked', toggle_power)
         header.append(self.power)
         self.append(header)
 
-        self.motion = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
+        self.pages = Gtk.Stack(vhomogeneous=False, hhomogeneous=False)
+        tabs = Gtk.StackSwitcher(stack=self.pages, css_classes=['camera-settings-tabs'])
+        self.append(tabs)
+        self.append(self.pages)
+
+        detection = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        self.motion = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=7)
         title = Gtk.Box(spacing=6)
         title.append(Gtk.Label(label='Sensibilité aux mouvements', xalign=0, hexpand=True, wrap=True))
         self.level = Gtk.Label(css_classes=['dim-label'])
         title.append(self.level)
         self.motion.append(title)
 
-        row = Gtk.Box(spacing=8)
         self.scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 1, 5, 1)
+        self.scale.add_css_class('motion-scale')
         self.scale.set_hexpand(True)
         self.scale.set_draw_value(False)
         self.scale.set_round_digits(0)
@@ -38,23 +43,33 @@ class CameraConfiguration(Gtk.Box):
         for level in self.SENSITIVITY:
             self.scale.add_mark(level, Gtk.PositionType.BOTTOM, None)
         self.scale.connect('value-changed', self.update_level)
-        row.append(self.scale)
-        self.apply = Gtk.Button(label='Appliquer', valign=Gtk.Align.CENTER, css_classes=['suggested-action'])
+        self.motion.append(self.scale)
+        self.apply = Gtk.Button(label='Appliquer', halign=Gtk.Align.END, css_classes=['suggested-action'])
         self.apply.connect('clicked', lambda *_: apply_sensitivity(int(self.scale.get_value())))
-        row.append(self.apply)
-        self.motion.append(row)
-        self.append(self.motion)
+        self.motion.append(self.apply)
+        detection.append(self.motion)
+        self.motion_status = Gtk.Label(xalign=0, wrap=True, css_classes=['dim-label'])
+        detection.append(self.motion_status)
+        for name, label, icon, page in (
+            ('commands', 'Commandes', 'emblem-system-symbolic', commands),
+            ('detection', 'Détection', 'view-reveal-symbolic', detection),
+            ('direct', 'Direct', 'camera-video-symbolic', direct),
+            ('positions', 'Positions', 'mark-location-symbolic', positions),
+        ):
+            self.pages.add_titled(page, name, label).set_icon_name(icon)
+        self.refresh(None, False)
+
+    def set_camera_name(self, name):
+        title = f'Réglages de {name}'
+        self.title.set_label(title)
+        self.title.set_tooltip_text(title)
 
     def refresh(self, options, busy):
         power = options.hibernating if options is not None else None
         level = options.motion_sensitivity if options is not None else None
-        self.set_visible(power is not None or level is not None)
         self.power.set_visible(power is not None)
         self.power.set_sensitive(not busy)
-        label, description = ('Réveiller', 'Réveiller la caméra') if power is True else (
-            'Mettre en veille', 'Mettre la caméra en veille',
-        )
-        self.power_content.set_label(label)
+        description = 'Réveiller la caméra' if power is True else 'Mettre la caméra en veille'
         self.power.set_tooltip_text(description)
         self.power.update_property([Gtk.AccessibleProperty.LABEL], [description])
         if power is True:
@@ -63,6 +78,8 @@ class CameraConfiguration(Gtk.Box):
             self.power.remove_css_class('wake-camera')
 
         self.motion.set_visible(level is not None)
+        self.motion_status.set_visible(level is None)
+        self.motion_status.set_label('Lecture des réglages…' if busy else 'Sensibilité indisponible.')
         self.scale.set_sensitive(not busy)
         if level is not None and level != self.saved_sensitivity:
             self.scale.set_value(level)
@@ -79,8 +96,9 @@ class CameraConfiguration(Gtk.Box):
 
 
 class CameraControls(Gtk.Box):
-    def __init__(self, apply):
-        super().__init__(spacing=8, css_classes=['camera-controls'])
+    def __init__(self, apply, *, labeled=False):
+        super().__init__(spacing=8, css_classes=['camera-controls'],
+                         orientation=Gtk.Orientation.VERTICAL if labeled else Gtk.Orientation.HORIZONTAL)
         theme = Gtk.IconTheme.get_for_display(self.get_display())
         light_on = ('torch-enabled-symbolic' if theme.has_icon('torch-enabled-symbolic')
                     else 'display-brightness-symbolic')
@@ -106,7 +124,14 @@ class CameraControls(Gtk.Box):
         ):
             group = self.groups[capability] = Gtk.Box(spacing=1, css_classes=['control-cluster'])
             group.update_property([Gtk.AccessibleProperty.LABEL], [name])
-            self.append(group)
+            if labeled:
+                label = Gtk.Label(label=name, xalign=0, hexpand=True, wrap=True)
+                row = Gtk.Box(spacing=6)
+                row.append(label)
+                row.append(group)
+                self.append(row)
+            else:
+                self.append(group)
             for value, icon, label in actions:
                 button = Gtk.Button(icon_name=icon, tooltip_text=label, css_classes=['control-icon'])
                 button.update_property([Gtk.AccessibleProperty.LABEL], [label])

@@ -7,6 +7,7 @@ from gi.repository import Adw, Gio, GLib, Gtk
 
 from . import __version__
 from .desktop import APP_NAME, autostart_enabled
+from .preferences import THEMES
 
 
 class FolderRow(Adw.ActionRow):
@@ -60,7 +61,7 @@ class FolderRow(Adw.ActionRow):
 
 class SettingsDialog(Adw.Dialog):
     def __init__(self, preferences, default_recording_folder, default_photo_folder, cameras, save):
-        super().__init__(title='Réglages', content_width=520)
+        super().__init__(title='Réglages', content_width=520, css_classes=['b6-settings'])
         self.preferences = preferences
         self.save = save
         self.entries = {}
@@ -78,6 +79,13 @@ class SettingsDialog(Adw.Dialog):
 
         page = Adw.PreferencesPage()
         toolbar.set_content(page)
+        appearance = Adw.PreferencesGroup(title='Apparence')
+        self.theme = Adw.ComboRow(title='Thème',
+                                  model=Gtk.StringList.new(['Suivre Ubuntu', 'Clair · Blanc et bleu ardoise',
+                                                            'Sombre · Graphite et cyan']),
+                                  selected=THEMES.index(preferences.theme))
+        appearance.add(self.theme)
+        page.add(appearance)
         general = Adw.PreferencesGroup(title='Général')
         self.autostart = Adw.SwitchRow(
             title='Lancer au démarrage',
@@ -102,7 +110,8 @@ class SettingsDialog(Adw.Dialog):
 
         names = Adw.PreferencesGroup(title='Noms des caméras',
                                      description=f'Ces noms apparaissent dans {APP_NAME} et dans les noms des fichiers.')
-        page.add(names)
+        if cameras:
+            page.add(names)
         for camera in cameras:
             row = Adw.EntryRow(title=camera.name, use_markup=False)
             row.set_text(preferences.camera_names.get(camera.identifier, ''))
@@ -121,7 +130,8 @@ class SettingsDialog(Adw.Dialog):
         try:
             preferences = replace(self.preferences, recording_folder=self.video_folder.folder, camera_names=names,
                                   photo_folder=self.photo_folder.folder,
-                                  motion_notifications=self.motion_notifications.get_active())
+                                  motion_notifications=self.motion_notifications.get_active(),
+                                  theme=THEMES[self.theme.get_selected()])
             self.save(preferences, autostart=self.autostart.get_active())
         except (OSError, UnicodeError):
             self.toasts.add_toast(Adw.Toast.new('Impossible de sauvegarder les réglages.'))

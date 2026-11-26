@@ -45,6 +45,12 @@ PREFERENCES_PATH = Path(os.environ.get('XDG_CONFIG_HOME') or Path.home() / '.con
 STATUS_REFRESH_SECONDS = 120
 MOTION_NOTIFICATION_ID = 'motion-alerts'
 ALERT_PRELOAD_ATTEMPTS = 5
+SIDEBAR_WIDTH = 264
+COLOR_SCHEMES = {
+    'system': Adw.ColorScheme.DEFAULT,
+    'light': Adw.ColorScheme.FORCE_LIGHT,
+    'dark': Adw.ColorScheme.FORCE_DARK,
+}
 
 
 def note(event: str) -> None:
@@ -186,6 +192,7 @@ class CameraIndicators(Gtk.Box):
                          margin_start=margin, margin_top=margin)
         self.battery = ReadingBadge()
         self.wifi = ReadingBadge()
+        self.wifi.add_css_class('wifi-reading')
         self.append(self.battery)
         self.append(self.wifi)
         self.update(None, None)
@@ -232,7 +239,8 @@ def latest_reading(previous, incoming):
 
 class CameraTile(Gtk.Box):
     def __init__(self, camera, worker, index):
-        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=9, hexpand=True, vexpand=True)
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, hexpand=True, vexpand=True,
+                         overflow=Gtk.Overflow.HIDDEN, css_classes=['camera-card'])
         self.camera, self.worker = camera, worker
         self.index = index
         self.preview = None
@@ -269,91 +277,98 @@ class CameraTile(Gtk.Box):
         self.microphone = None
         self.timer = None
         self.generation = None
-        self.add_css_class('view-card')
         selection = Gtk.GestureClick(button=Gdk.BUTTON_PRIMARY)
         selection.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
-        selection.connect('pressed', self.select_for_keyboard)
+        selection.connect('released', self.select_from_tile)
         self.add_controller(selection)
 
-        header = Gtk.Box(spacing=14)
-        self.name_label = Gtk.Label(xalign=0, hexpand=True, ellipsize=Pango.EllipsizeMode.END)
-        self.name_label.add_css_class('heading')
-        self.set_display_name(camera.name)
-        header.append(self.name_label)
-        self.button = Gtk.Button(label='Voir le direct')
-        self.button.add_css_class('suggested-action')
-        self.button.add_css_class('live-button')
-        self.button.connect('clicked', self.toggle)
-        header.append(self.button)
+        header = Gtk.Box(spacing=6, css_classes=['camera-heading'])
+        self.name_label = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END)
+        self.name_label.add_css_class('camera-name')
+        self.select_button = Gtk.Button(child=self.name_label, hexpand=True, has_frame=False,
+                                        css_classes=['camera-select-button'])
+        self.select_button.connect('clicked', self.select_from_heading)
+        header.append(self.select_button)
+        self.indicators = CameraIndicators(margin=0)
+        self.indicators.set_valign(Gtk.Align.CENTER)
+        header.append(self.indicators)
         self.append(header)
         self.layout_controls = Gtk.Box(spacing=5, visible=False, css_classes=['camera-layout-controls'])
         self.append(self.layout_controls)
-        self.status = Gtk.Label(label='Prête · diffusion à la demande', xalign=0, wrap=True)
-        self.status.add_css_class('dim-label')
-        self.append(self.status)
 
         frame = self.video_area = Gtk.Overlay(hexpand=True, vexpand=True)
-        frame.add_css_class('video-area')
+        frame.add_css_class('camera-stage')
         self.picture = Gtk.Picture(can_shrink=True, content_fit=Gtk.ContentFit.CONTAIN)
         self.zoom.attach(self.picture)
         frame.set_child(self.picture)
-        self.empty = Gtk.Image(icon_name=APP_ICON_NAME, pixel_size=50, halign=Gtk.Align.CENTER,
-                               valign=Gtk.Align.CENTER, css_classes=['camera-placeholder'])
-        frame.add_overlay(self.empty)
-        self.indicators = CameraIndicators(margin=8)
-        frame.add_overlay(self.indicators)
-        self.joystick = self.overlay_joystick(size=96, margin=8)
+        self.placeholder = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, halign=Gtk.Align.CENTER,
+                                   valign=Gtk.Align.CENTER, margin_start=10, margin_end=10,
+                                   can_target=False, css_classes=['camera-placeholder'])
+        self.placeholder.append(Gtk.Image(icon_name=APP_ICON_NAME, pixel_size=37))
+        self.status = Gtk.Label(label='Prête · diffusion à la demande', wrap=True, max_width_chars=38,
+                                justify=Gtk.Justification.CENTER)
+        self.placeholder.append(self.status)
+        frame.add_overlay(self.placeholder)
+        self.joystick = self.overlay_joystick(size=96, margin=12)
         self.joystick.add_css_class('compact')
+        self.joystick.set_margin_bottom(52)
         self.joystick.set_visible(False)
         self.joystick.set_sensitive(False)
         frame.add_overlay(self.joystick)
-        frame.set_size_request(300, 165)
         self.append(frame)
 
-        self.camera_actions = Gtk.Box(spacing=5, sensitive=False, css_classes=['media-strip'])
-        self.camera_actions.set_hexpand(True)
-        self.append(self.camera_actions)
+        media = Gtk.Box(spacing=4, halign=Gtk.Align.START, valign=Gtk.Align.END, margin_start=9,
+                        margin_bottom=9, css_classes=['camera-media'])
+        frame.add_overlay(media)
+        self.button = icon_button('media-playback-start-symbolic', 'Voir le direct')
+        self.button.connect('clicked', self.toggle)
+        media.append(self.button)
+        self.camera_actions = Gtk.Box(spacing=4, sensitive=False)
+        media.append(self.camera_actions)
         self.audio_button = self.sound_button()
         self.audio_button.connect('toggled', self.change_audio)
         self.camera_actions.append(self.audio_button)
         self.talk_button = SpeakButton(self.start_talking, self.stop_talking)
         self.camera_actions.append(self.talk_button)
-        fullscreen = Gtk.Button(icon_name='view-fullscreen-symbolic', tooltip_text='Plein écran',
-                                css_classes=['control-icon'])
-        fullscreen.update_property([Gtk.AccessibleProperty.LABEL], ['Plein écran'])
+        self.add_capture_buttons(self.camera_actions)
+        fullscreen = icon_button('view-fullscreen-symbolic', 'Plein écran')
         fullscreen.connect('clicked', self.fullscreen_player)
         self.camera_actions.append(fullscreen)
-        self.add_capture_buttons(self.camera_actions)
+
         self.quality_choice = self.quality_selector()
         self.quality_choice.connect('notify::selected', self.change_quality)
         self.quality_choice.set_sensitive(False)
-        self.resolution = Gtk.Label()
-        self.resolution.add_css_class('dim-label')
-        self.resolution.add_css_class('numeric')
-        self.camera_actions.append(self.resolution)
+        self.resolution = Gtk.Label(xalign=0, css_classes=['dim-label', 'numeric'])
         self.delay_label = Gtk.Label(label='Retard —', css_classes=['dim-label', 'numeric'])
         self.delay_label.set_tooltip_text('Retard supplémentaire estimé depuis l’ouverture du flux')
         self.live_tools, _, self.favorites = self.make_live_tools(self.delay_label)
         self.live_tools.set_sensitive(False)
-        self.controls = CameraControls(self.change_camera_option)
+        self.controls = CameraControls(self.change_camera_option, labeled=True)
         self.favorite_settings = self.make_favorite_settings()
-        self.configuration = CameraConfiguration(self.toggle_camera_power, self.change_motion_sensitivity)
-        settings = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, css_classes=['tile-camera-settings'])
-        settings.append(self.configuration)
-        settings.append(self.live_tools)
         quality = Gtk.Box(spacing=8)
-        quality.append(Gtk.Label(label='Qualité du direct', xalign=0, hexpand=True))
+        quality.append(Gtk.Label(label='Qualité du direct', xalign=0, hexpand=True, wrap=True))
         quality.append(self.quality_choice)
-        settings.append(quality)
-        settings.append(self.controls)
-        settings.append(self.favorite_settings)
-        gear, settings_panel = self.camera_settings_disclosure(settings, 'Réglages de cette caméra')
-        header.insert_child_after(gear, self.name_label)
-        self.append(settings_panel)
+        direct = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        for widget in (quality, self.resolution, self.live_tools):
+            direct.append(widget)
+        positions = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        self.favorites.set_halign(Gtk.Align.START)
+        positions.append(self.favorites)
+        positions.append(self.favorite_settings)
+        self.positions_status = Gtk.Label(label='Positions indisponibles.', xalign=0, wrap=True,
+                                          css_classes=['dim-label'])
+        positions.append(self.positions_status)
+        self.configuration = CameraConfiguration(self.toggle_camera_power, self.change_motion_sensitivity,
+                                                 direct, self.controls, positions)
+        self.set_display_name(camera.name)
+        self.refresh_controls()
 
     def set_display_name(self, name):
         self.name_label.set_text(name)
-        self.name_label.set_tooltip_text(name)
+        label = f'Afficher les réglages de {name}'
+        self.select_button.set_tooltip_text(label)
+        self.select_button.update_property([Gtk.AccessibleProperty.LABEL], [label])
+        self.configuration.set_camera_name(name)
         if self.fullscreen_window is not None:
             self.fullscreen_window.set_title(name)
 
@@ -372,12 +387,10 @@ class CameraTile(Gtk.Box):
             for group in (zoom, favorites, recovery):
                 tools.append(group)
         else:
-            tools = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, max_children_per_line=3,
-                                column_spacing=6, row_spacing=6, css_classes=['camera-live-tools'])
-            for group in (zoom, favorites, recovery):
-                item = Gtk.FlowBoxChild(child=group, focusable=False, halign=Gtk.Align.START)
-                group.bind_property('visible', item, 'visible', GObject.BindingFlags.SYNC_CREATE)
-                tools.append(item)
+            tools = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+            zoom.set_halign(Gtk.Align.START)
+            tools.append(zoom)
+            tools.append(recovery)
         return tools, zoom, favorites
 
     @staticmethod
@@ -511,15 +524,30 @@ class CameraTile(Gtk.Box):
         joystick.set_tooltip_text('Maintiens une direction pour orienter la caméra')
         return joystick
 
-    def select_for_keyboard(self, _gesture, _count, x, y):
-        if self.joystick.is_sensitive() and isinstance(root := self.get_root(), Window):
+    def select_from_tile(self, _gesture, _count, x, y):
+        clicked = self.pick(x, y, Gtk.PickFlags.DEFAULT)
+        while clicked is not None and clicked is not self:
+            if isinstance(clicked, Gtk.Button) or clicked is self.layout_controls:
+                return
+            clicked = clicked.get_parent()
+        self.select_from_heading()
+
+    def select_from_heading(self, *_):
+        if isinstance(root := self.get_root(), Window):
             root.select_camera(self)
-            clicked = self.pick(x, y, Gtk.PickFlags.DEFAULT)
-            while clicked is not None and clicked is not self:
-                if isinstance(clicked, (Gtk.Button, Gtk.DropDown, Gtk.Editable, Gtk.Range)):
-                    return
-                clicked = clicked.get_parent()
+        if self.joystick.is_sensitive():
             self.joystick.grab_focus()
+
+    def set_selected(self, selected):
+        if selected:
+            self.add_css_class('selected-camera')
+        else:
+            self.release_joysticks()
+            self.remove_css_class('selected-camera')
+        self.sync_joystick()
+
+    def sync_joystick(self):
+        self.joystick.set_visible(self.has_css_class('selected-camera') and self.joystick.get_sensitive())
 
     @staticmethod
     def sound_button():
@@ -642,6 +670,7 @@ class CameraTile(Gtk.Box):
             if controls is not None:
                 controls.refresh(self.camera_options, busy or sleeping)
         slots = self.camera_options.favorite_slots if self.camera_options is not None else None
+        self.positions_status.set_visible(slots is None)
         for shortcuts in (self.favorites, self.fullscreen_favorites):
             if shortcuts is not None:
                 shortcuts.refresh(slots, busy)
@@ -764,7 +793,7 @@ class CameraTile(Gtk.Box):
         motion = self.motion = MotionInput()
         clock = self.clock = LiveClock()
         reconnect = self.reconnect = threading.Event()
-        self.button.set_label('Arrêter')
+        self.set_playing(True)
         self.status.set_label('Ouverture du direct…')
         note(f'stream_requested camera={self.index}')
 
@@ -808,10 +837,12 @@ class CameraTile(Gtk.Box):
     def set_status(self, generation, message):
         if self.generation is generation:
             self.status.set_label(message)
+            self.placeholder.set_visible(True)
             self.release_joysticks()
             self.stop_talking()
             self.close_audio()
             self.joystick.set_sensitive(False)
+            self.sync_joystick()
             self.camera_actions.set_sensitive(False)
             self.live_tools.set_sensitive(False)
             self.quality_choice.set_sensitive(False)
@@ -830,6 +861,14 @@ class CameraTile(Gtk.Box):
         self.joystick.release()
         if self.fullscreen_joystick is not None:
             self.fullscreen_joystick.release()
+
+    def set_playing(self, playing):
+        icon, label = ('media-playback-stop-symbolic', 'Arrêter le direct') if playing else (
+            'media-playback-start-symbolic', 'Voir le direct',
+        )
+        self.button.set_icon_name(icon)
+        self.button.set_tooltip_text(label)
+        self.button.update_property([Gtk.AccessibleProperty.LABEL], [label])
 
     def fullscreen_player(self, *_):
         if self.fullscreen_window is not None:
@@ -855,7 +894,7 @@ class CameraTile(Gtk.Box):
         joystick = self.fullscreen_joystick = self.overlay_joystick(size=144, margin=24)
         keyboard = CameraKeyboard(window, lambda: joystick)
         for property_name in ('visible', 'sensitive'):
-            bindings.append(self.joystick.bind_property(property_name, joystick, property_name,
+            bindings.append(self.joystick.bind_property('sensitive', joystick, property_name,
                                                         GObject.BindingFlags.SYNC_CREATE))
         box.add_overlay(joystick)
 
@@ -1054,9 +1093,9 @@ class CameraTile(Gtk.Box):
     def decoded(self, generation, epoch):
         if self.generation is generation and self.preview_epoch == epoch:
             self.status.set_label('En direct')
-            self.empty.set_visible(False)
-            self.joystick.set_visible(self.motorized)
+            self.placeholder.set_visible(False)
             self.joystick.set_sensitive(self.motorized)
+            self.sync_joystick()
             if self.motorized and isinstance(root := self.get_root(), Window) and root.selected_camera is None:
                 root.select_camera(self)
             self.camera_actions.set_sensitive(True)
@@ -1093,8 +1132,6 @@ class CameraTile(Gtk.Box):
         self.generation = None
         self.release_joysticks()
         self.stop_talking()
-        if isinstance(root := self.get_root(), Window) and root.selected_camera is self:
-            root.select_camera(None)
         self.audio_button.set_active(False)
         self.close_audio()
         self.audio_frames = None
@@ -1126,14 +1163,15 @@ class CameraTile(Gtk.Box):
         self.refresh_controls()
         self.delay_label.set_label('Retard —')
         self.resolution.set_text('')
-        self.empty.set_visible(True)
-        self.button.set_label('Voir le direct')
+        self.placeholder.set_visible(True)
+        self.set_playing(False)
         self.status.set_label(message)
 
 
 class Window(Adw.ApplicationWindow):
     def __init__(self, application, worker):
         super().__init__(application=application, title=APP_NAME, default_width=1080, default_height=740)
+        self.add_css_class('b6-window')
         self.initial_monitor_handler = None
         self.initial_monitor_known = False
         self.size_for_monitor(self.get_display().get_monitors().get_item(0))
@@ -1153,6 +1191,7 @@ class Window(Adw.ApplicationWindow):
         self.login_task = None
         self.saved_account = False
         self.preferences = Preferences.load(PREFERENCES_PATH)
+        self.apply_theme()
         videos = GLib.get_user_special_dir(GLib.UserDirectory.DIRECTORY_VIDEOS)
         self.default_recording_folder = (Path(videos) if videos else Path.home() / 'Videos') / 'Cinnado Live'
         pictures = GLib.get_user_special_dir(GLib.UserDirectory.DIRECTORY_PICTURES)
@@ -1161,33 +1200,29 @@ class Window(Adw.ApplicationWindow):
         self.connect('notify::is-active', self.release_window_microphone)
 
         toolbar = Adw.ToolbarView()
-        header = Adw.HeaderBar()
-        brand = Gtk.Box(spacing=8, valign=Gtk.Align.CENTER)
+        header = Adw.HeaderBar(css_classes=['b6-header'])
+        brand = Gtk.Box(spacing=9, valign=Gtk.Align.CENTER, width_request=SIDEBAR_WIDTH - 12,
+                        css_classes=['b6-brand'])
         logo = Gtk.Image.new_from_icon_name(APP_ICON_NAME)
         logo.add_css_class('brand-icon')
-        logo.set_pixel_size(28)
-        self.brand_style = Adw.StyleManager.get_for_display(self.get_display())
-
-        def update_logo(style, *_):
-            if style.get_dark():
-                logo.add_css_class('theme-dark')
-            else:
-                logo.remove_css_class('theme-dark')
-
-        self.brand_style_handler = self.brand_style.connect('notify::dark', update_logo)
-        update_logo(self.brand_style)
+        logo.set_pixel_size(30)
         brand.append(logo)
-        brand.append(Adw.WindowTitle(title=APP_NAME, subtitle='Be Seeing'))
-        header.set_title_widget(brand)
+        brand.append(Gtk.Label(label=APP_NAME, css_classes=['b6-wordmark']))
+        header.pack_start(brand)
+        self.page_title = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END, visible=False,
+                                    css_classes=['b6-page-title'])
+        header.pack_start(self.page_title)
+        header.set_title_widget(Gtk.Box())
         toolbar.add_top_bar(header)
         self.logout = Gtk.Button(label='Déconnexion', visible=False)
         self.logout.connect('clicked', self.sign_out)
         header.pack_end(self.logout)
-        self.settings = Gtk.Button(icon_name='emblem-system-symbolic', tooltip_text='Réglages', visible=False)
+        self.settings = Gtk.Button(icon_name='emblem-system-symbolic', tooltip_text='Réglages',
+                                   css_classes=['flat', 'b6-header-settings'])
         self.settings.update_property([Gtk.AccessibleProperty.LABEL], ['Réglages'])
         self.settings.connect('clicked', self.open_settings)
         header.pack_end(self.settings)
-        self.stack = Gtk.Stack()
+        self.stack = Gtk.Stack(css_classes=['b6-main'])
         toolbar.set_content(self.stack)
         self.toasts = Adw.ToastOverlay(child=toolbar)
         self.set_content(self.toasts)
@@ -1226,7 +1261,7 @@ class Window(Adw.ApplicationWindow):
         self.stack.add_named(login, 'login')
 
         account_view = Gtk.Box()
-        sidebar = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5, width_request=148,
+        sidebar = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5, width_request=SIDEBAR_WIDTH, hexpand=False,
                           css_classes=['b6-sidebar'])
         account_view.append(sidebar)
         self.cameras_button = Gtk.ToggleButton(css_classes=['flat', 'b6-nav-button'])
@@ -1246,10 +1281,17 @@ class Window(Adw.ApplicationWindow):
         self.sd_button.set_group(self.cameras_button)
         self.sd_button.connect('clicked', self.open_sd)
         sidebar.append(self.sd_button)
+        sidebar.append(Gtk.Separator(css_classes=['b6-sidebar-divider']))
+        sidebar.append(Gtk.Box(vexpand=True))
+        self.panels = Gtk.Stack(hhomogeneous=False, vhomogeneous=False)
+        self.panel_scroll = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER,
+                                               hexpand=False, propagate_natural_height=True, max_content_height=340,
+                                               child=self.panels, visible=False)
+        sidebar.append(self.panel_scroll)
 
         self.account_pages = Gtk.Stack(hexpand=True, vexpand=True, hhomogeneous=False, vhomogeneous=False)
         account_view.append(self.account_pages)
-        self.camera_grid = CameraGrid(self.preferences, self.save_camera_layouts)
+        self.camera_grid = CameraGrid(self.preferences, self.save_camera_layouts, self.select_camera)
         self.account_pages.add_named(self.camera_grid, 'cameras')
         self.alerts_view = AlertsView(self.remove_alert, self.clear_alerts, self.open_alert_clip,
                                       self.download_alert_clip, self.request_alert_previews)
@@ -1265,6 +1307,9 @@ class Window(Adw.ApplicationWindow):
 
     def toast(self, message):
         self.toasts.add_toast(Adw.Toast.new(message))
+
+    def apply_theme(self):
+        Adw.StyleManager.get_default().set_color_scheme(COLOR_SCHEMES[self.preferences.theme])
 
     def update_view_preferences(self, **changes):
         updated = replace(self.preferences, **changes)
@@ -1300,6 +1345,7 @@ class Window(Adw.ApplicationWindow):
                 set_autostart(previous)
             raise
         self.preferences = preferences
+        self.apply_theme()
         for tile in self.tiles:
             tile.set_display_name(preferences.camera_names.get(tile.camera.identifier, tile.camera.name))
         self.refresh_sd_cameras()
@@ -1317,6 +1363,8 @@ class Window(Adw.ApplicationWindow):
             tile.release_joysticks()
             tile.stop_talking()
         self.account_pages.set_visible_child_name('alerts')
+        self.page_title.set_label('Alertes de mouvement')
+        self.panel_scroll.set_visible(False)
         self.alerts_button.set_active(True)
         self.alerts_view.set_active(True)
         self.dismiss_alert_notification()
@@ -1326,6 +1374,8 @@ class Window(Adw.ApplicationWindow):
         self.alerts_view.set_active(False)
         self.sd_view.set_active(False)
         self.account_pages.set_visible_child_name('cameras')
+        self.page_title.set_label('Direct')
+        self.panel_scroll.set_visible(self.selected_camera is not None)
         self.cameras_button.set_active(True)
 
     def refresh_sd_cameras(self):
@@ -1341,6 +1391,8 @@ class Window(Adw.ApplicationWindow):
             tile.release_joysticks()
             tile.stop_talking()
         self.account_pages.set_visible_child_name('sd')
+        self.page_title.set_label('Carte microSD')
+        self.panel_scroll.set_visible(False)
         self.sd_button.set_active(True)
         self.sd_view.set_active(True)
 
@@ -1566,22 +1618,19 @@ class Window(Adw.ApplicationWindow):
             return
         self.keyboard.release()
         if self.selected_camera is not None:
-            self.selected_camera.remove_css_class('keyboard-camera')
+            self.selected_camera.set_selected(False)
         self.selected_camera = tile
         if tile is not None:
-            tile.add_css_class('keyboard-camera')
+            tile.set_selected(True)
+            self.panels.set_visible_child(tile.configuration)
+        self.camera_grid.focus_camera(tile)
+        self.panel_scroll.set_visible(tile is not None and self.account_pages.get_visible_child_name() == 'cameras')
 
     def keyboard_joystick(self):
         if (self.stack.get_visible_child_name() != 'account'
                 or self.account_pages.get_visible_child_name() != 'cameras'):
             return None
-        if self.selected_camera is not None:
-            return self.selected_camera.joystick
-        for tile in self.tiles:
-            if tile.joystick.is_sensitive() and tile.joystick.get_visible():
-                self.select_camera(tile)
-                return tile.joystick
-        return None
+        return self.selected_camera.joystick if self.selected_camera is not None else None
 
     def release_window_microphone(self, *_):
         if not self.is_active():
@@ -1689,11 +1738,14 @@ class Window(Adw.ApplicationWindow):
             tile = CameraTile(camera, self.worker, index + 1)
             tile.set_display_name(self.preferences.camera_names.get(camera.identifier, camera.name))
             self.tiles.append(tile)
+            self.panels.add_child(tile.configuration)
             self.camera_grid.add(tile)
             tile.load_camera_options()
         self.camera_grid.arrange()
+        if order := self.camera_grid.ordered_keys():
+            self.select_camera(self.camera_grid.tiles[order[0]])
         self.logout.set_visible(True)
-        self.settings.set_visible(True)
+        self.page_title.set_visible(True)
         self.alert_journal = journal
         self.refresh_sd_cameras()
         self.show_cameras()
@@ -1725,6 +1777,7 @@ class Window(Adw.ApplicationWindow):
                 tile.camera_status_task.cancel()
                 tile.camera_status_task = None
             tile.reset('Direct arrêté.')
+            self.panels.remove(tile.configuration)
         self.camera_grid.clear()
         self.tiles.clear()
 
@@ -1733,7 +1786,7 @@ class Window(Adw.ApplicationWindow):
         self.close_alert_journal()
         self.worker.submit(self.worker.account.close())
         self.logout.set_visible(False)
-        self.settings.set_visible(False)
+        self.page_title.set_visible(False)
         self.stack.set_visible_child_name('login')
         self.info.set_label('Session fermée.')
 
@@ -1759,9 +1812,6 @@ class Window(Adw.ApplicationWindow):
             application.hide_to_tray()
             return True
         self.closed = True
-        if self.brand_style_handler is not None:
-            self.brand_style.disconnect(self.brand_style_handler)
-            self.brand_style_handler = None
         self.clear_tiles()
         self.close_alert_journal()
         return False
@@ -1790,15 +1840,25 @@ class Application(Adw.Application):
     def do_startup(self):
         Adw.Application.do_startup(self)
         css = Gtk.CssProvider()
-        css.load_from_path(str(Path(__file__).with_name('style.css')))
+        directory = Path(__file__).parent
+        style = (directory / 'style.css').read_text(encoding='utf-8')
+        palettes = {dark: (directory / filename).read_text(encoding='utf-8')
+                    for dark, filename in ((True, 'palette-dark.css'), (False, 'palette-light.css'))}
         display = Gdk.Display.get_default()
+        manager = Adw.StyleManager.get_for_display(display)
+
+        def load_palette(theme, *_):
+            css.load_from_string(palettes[theme.get_dark()] + '\n' + style)
+
+        self.palette_handler = manager.connect('notify::dark', load_palette)
+        load_palette(manager)
         Gtk.IconTheme.get_for_display(display).add_search_path(str(ICON_SEARCH_PATH))
         Gtk.Window.set_default_icon_name(APP_ICON_NAME)
         Gtk.StyleContext.add_provider_for_display(display, css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
         connection = self.get_dbus_connection()
         if connection is not None:
             self.tray = TrayIcon(connection, self.show_from_tray, self.hide_to_tray, self.quit_from_tray,
-                                 Adw.StyleManager.get_for_display(display))
+                                 manager)
 
     def ensure_window(self):
         if self.main_window is None:
@@ -1874,6 +1934,7 @@ class Application(Adw.Application):
 
     def do_shutdown(self):
         self.cancel_startup_fallback()
+        Adw.StyleManager.get_for_display(Gdk.Display.get_default()).disconnect(self.palette_handler)
         if self.tray is not None:
             self.tray.close()
         if self.worker:

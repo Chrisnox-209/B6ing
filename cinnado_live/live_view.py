@@ -100,7 +100,8 @@ class VideoZoom(GObject.Object, Gdk.Paintable):
             ratio = self.do_get_intrinsic_aspect_ratio()
             if ratio <= 0 or picture.get_height() <= 0 or picture.get_width() <= 0:
                 return
-            width = min(picture.get_width(), picture.get_height() * ratio)
+            fit = max if picture.get_content_fit() == Gtk.ContentFit.COVER else min
+            width = fit(picture.get_width(), picture.get_height() * ratio)
             height = width / ratio
             self.set_center(center[0] - dx / (width * self.factor), center[1] - dy / (height * self.factor))
 
